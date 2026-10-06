@@ -250,10 +250,6 @@ func isPortFree(ip string, port int) bool {
 }
 
 func validateConfiguration(allocations []Allocation) error {
-	if len(allocations) == 0 {
-		return errors.New("at least one allocation is required")
-	}
-
 	for _, item := range allocations {
 		if err := validateAllocation(item); err != nil {
 			return err

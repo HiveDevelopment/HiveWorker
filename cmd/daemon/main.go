@@ -21,7 +21,7 @@ func main() {
 	cfg := config.Load()
 
 	if len(cfg.Allocations.Entries) == 0 {
-		log.Fatal("no allocations are configured")
+		log.Println("No allocations are currently configured")
 	}
 
 	allocManager := allocation.NewManager(

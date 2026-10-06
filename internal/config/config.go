@@ -272,10 +272,6 @@ func RegisterWorker(cfg *Config) error {
 		return fmt.Errorf("registration response did not include token")
 	}
 
-	if len(registered.Configuration.Allocations.Entries) == 0 {
-		return fmt.Errorf("registration response did not include any allocations")
-	}
-
 	applyRegistrationConfiguration(cfg, registered)
 
 	cfg.Node.ID = registered.NodeID
