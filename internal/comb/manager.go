@@ -8,16 +8,20 @@ import (
 )
 
 type Comb struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Game        string            `json:"game"`
-	Startup     string            `json:"startup"`
-	Variables   map[string]string `json:"variables"`
-	Install     []InstallStep     `json:"install"`
-	Image       string            `json:"image"`
-	WorkingDir  string            `json:"working_dir"`
-	Entrypoint  []string          `json:"entrypoint"`
-	Environment map[string]string `json:"environment"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Category     string            `json:"category,omitempty"`
+	Group        string            `json:"group,omitempty"`
+	Game         string            `json:"game,omitempty"`
+	Tags         []string          `json:"tags,omitempty"`
+	Capabilities []string          `json:"capabilities,omitempty"`
+	Startup      string            `json:"startup"`
+	Variables    map[string]string `json:"variables"`
+	Install      []InstallStep     `json:"install"`
+	Image        string            `json:"image"`
+	WorkingDir   string            `json:"working_dir"`
+	Entrypoint   []string          `json:"entrypoint"`
+	Environment  map[string]string `json:"environment"`
 }
 
 type InstallStep struct {
@@ -44,32 +48,35 @@ func (m *Manager) Load() error {
 		return err
 	}
 
-	files, err := os.ReadDir(m.dir)
-	if err != nil {
-		return err
-	}
+	m.combs = map[string]*Comb{}
 
-	for _, file := range files {
-		if file.IsDir() || filepath.Ext(file.Name()) != ".json" {
-			continue
-		}
-
-		data, err := os.ReadFile(filepath.Join(m.dir, file.Name()))
+	return filepath.WalkDir(m.dir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			continue
+			return err
 		}
 
-		var comb Comb
-		if err := json.Unmarshal(data, &comb); err != nil {
-			continue
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			return nil
 		}
 
-		if comb.ID != "" {
-			m.combs[comb.ID] = &comb
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
 		}
-	}
 
-	return nil
+		var loaded Comb
+		if err := json.Unmarshal(data, &loaded); err != nil {
+			return err
+		}
+
+		if loaded.ID == "" {
+			return errors.New("comb id is required: " + path)
+		}
+
+		m.combs[loaded.ID] = &loaded
+
+		return nil
+	})
 }
 
 func (m *Manager) List() []*Comb {

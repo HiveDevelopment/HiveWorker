@@ -56,6 +56,10 @@ func (m *Manager) Start(id string) error {
 	}
 
 	command := renderTemplate(startupCommand, variables)
+	environment := make(map[string]string, len(selectedComb.Environment))
+	for key, value := range selectedComb.Environment {
+		environment[key] = renderTemplate(value, variables)
+	}
 
 	_ = os.MkdirAll(cellCopy.Dir, 0755)
 
@@ -67,7 +71,7 @@ func (m *Manager) Start(id string) error {
 		InstanceDir:    cellCopy.Dir,
 		Image:          image,
 		WorkingDir:     selectedComb.WorkingDir,
-		Environment:    selectedComb.Environment,
+		Environment:    environment,
 		AllocationIP:   cellCopy.Allocation.IP,
 		AllocationPort: cellCopy.Allocation.Port,
 		Limits:         cellCopy.Limits,
