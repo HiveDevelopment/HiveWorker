@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"hivepanel-worker/internal/allocation"
+	"hivepanel-worker/internal/version"
 )
 
 type Config struct {
@@ -44,18 +45,13 @@ type WorkerConfig struct {
 type SFTPConfig struct {
 	Enabled bool `yaml:"enabled"`
 
-	// Local address the worker's SSH/SFTP server binds to.
 	Listen string `yaml:"listen"`
 
-	// Public connection details displayed to users by the panel.
-	// These do not affect the local bind address.
 	PublicFQDN string `yaml:"public_fqdn"`
 	PublicPort int    `yaml:"public_port"`
 
-	// Persistent SSH host private key used by the SFTP server.
 	HostKeyPath string `yaml:"host_key_path"`
 
-	// Timeout for authentication requests made to the panel.
 	AuthTimeoutSeconds int `yaml:"auth_timeout_seconds"`
 }
 
@@ -81,8 +77,6 @@ type DockerConfig struct {
 type AllocationConfig struct {
 	Entries []allocation.Allocation `yaml:"entries,omitempty"`
 
-	// Legacy fields are retained so existing Worker configs can be loaded and
-	// migrated automatically to exact allocation entries.
 	IP        string   `yaml:"ip,omitempty"`
 	IPs       []string `yaml:"ips,omitempty"`
 	PortStart int      `yaml:"port_start,omitempty"`
@@ -97,8 +91,55 @@ type registrationRequest struct {
 }
 
 type registrationResponse struct {
-	NodeID string `json:"node_id"`
-	Token  string `json:"token"`
+	NodeID        string                    `json:"node_id"`
+	Token         string                    `json:"token"`
+	Configuration registrationConfiguration `json:"configuration"`
+}
+
+type registrationConfiguration struct {
+	Panel       registrationPanelConfig      `json:"panel"`
+	Worker      registrationWorkerConfig     `json:"worker"`
+	SFTP        registrationSFTPConfig       `json:"sftp"`
+	Paths       registrationPathsConfig      `json:"paths"`
+	Runtime     registrationRuntimeConfig    `json:"runtime"`
+	Docker      registrationDockerConfig     `json:"docker"`
+	Allocations registrationAllocationConfig `json:"allocations"`
+}
+
+type registrationPanelConfig struct {
+	URL string `json:"url"`
+}
+
+type registrationWorkerConfig struct {
+	Listen string `json:"listen"`
+}
+
+type registrationSFTPConfig struct {
+	Enabled            bool   `json:"enabled"`
+	Listen             string `json:"listen"`
+	PublicFQDN         string `json:"public_fqdn"`
+	PublicPort         int    `json:"public_port"`
+	HostKeyPath        string `json:"host_key_path"`
+	AuthTimeoutSeconds int    `json:"auth_timeout_seconds"`
+}
+
+type registrationPathsConfig struct {
+	Data         string `json:"data"`
+	Instances    string `json:"instances"`
+	Backups      string `json:"backups"`
+	BackupMounts string `json:"backup_mounts"`
+}
+
+type registrationRuntimeConfig struct {
+	Type string `json:"type"`
+}
+
+type registrationDockerConfig struct {
+	Network string `json:"network"`
+}
+
+type registrationAllocationConfig struct {
+	Entries []allocation.Allocation `json:"entries"`
 }
 
 func Load() Config {
@@ -138,7 +179,7 @@ func Default() Config {
 		},
 
 		Worker: WorkerConfig{
-			Token:  "super-secret-token",
+			Token:  "",
 			Listen: "0.0.0.0:8080",
 		},
 
@@ -154,14 +195,14 @@ func Default() Config {
 		Node: NodeConfig{},
 
 		Paths: Paths{
-			Data:         "./data",
-			Instances:    "./instances",
-			Backups:      "./backups",
-			BackupMounts: "./backup_mounts",
+			Data:         "/var/lib/hivepanel/data",
+			Instances:    "/var/lib/hivepanel/cells",
+			Backups:      "/var/lib/hivepanel/backups",
+			BackupMounts: "/var/lib/hivepanel/backup_mounts",
 		},
 
 		Runtime: Runtime{
-			Type: "process",
+			Type: "docker",
 		},
 
 		Docker: DockerConfig{
@@ -169,11 +210,7 @@ func Default() Config {
 		},
 
 		Allocations: AllocationConfig{
-			Entries:   []allocation.Allocation{},
-			IP:        "0.0.0.0",
-			IPs:       []string{},
-			PortStart: 25565,
-			PortEnd:   25600,
+			Entries: []allocation.Allocation{},
 		},
 	}
 }
@@ -185,7 +222,7 @@ func RegisterWorker(cfg *Config) error {
 		RegistrationToken: cfg.Worker.RegistrationToken,
 		Hostname:          hostname,
 		Platform:          runtime.GOOS + "/" + runtime.GOARCH,
-		Version:           "dev",
+		Version:           version.Version,
 	})
 	if err != nil {
 		return err
@@ -222,8 +259,9 @@ func RegisterWorker(cfg *Config) error {
 	}
 
 	var registered registrationResponse
+
 	if err := json.NewDecoder(response.Body).Decode(&registered); err != nil {
-		return err
+		return fmt.Errorf("failed to decode registration response: %w", err)
 	}
 
 	if registered.NodeID == "" {
@@ -234,11 +272,92 @@ func RegisterWorker(cfg *Config) error {
 		return fmt.Errorf("registration response did not include token")
 	}
 
+	if len(registered.Configuration.Allocations.Entries) == 0 {
+		return fmt.Errorf("registration response did not include any allocations")
+	}
+
+	applyRegistrationConfiguration(cfg, registered)
+
 	cfg.Node.ID = registered.NodeID
 	cfg.Worker.Token = registered.Token
 	cfg.Worker.RegistrationToken = ""
 
-	return Save(*cfg)
+	normalise(cfg)
+
+	if err := validate(*cfg); err != nil {
+		return fmt.Errorf("panel returned invalid worker configuration: %w", err)
+	}
+
+	if err := Save(*cfg); err != nil {
+		return fmt.Errorf("failed to persist registered worker configuration: %w", err)
+	}
+
+	return nil
+}
+
+func applyRegistrationConfiguration(
+	cfg *Config,
+	registered registrationResponse,
+) {
+	configuration := registered.Configuration
+
+	if strings.TrimSpace(configuration.Panel.URL) != "" {
+		cfg.Panel.URL = configuration.Panel.URL
+	}
+
+	if strings.TrimSpace(configuration.Worker.Listen) != "" {
+		cfg.Worker.Listen = configuration.Worker.Listen
+	}
+
+	cfg.SFTP.Enabled = configuration.SFTP.Enabled
+
+	if strings.TrimSpace(configuration.SFTP.Listen) != "" {
+		cfg.SFTP.Listen = configuration.SFTP.Listen
+	}
+
+	cfg.SFTP.PublicFQDN = configuration.SFTP.PublicFQDN
+
+	if configuration.SFTP.PublicPort > 0 {
+		cfg.SFTP.PublicPort = configuration.SFTP.PublicPort
+	}
+
+	if strings.TrimSpace(configuration.SFTP.HostKeyPath) != "" {
+		cfg.SFTP.HostKeyPath = configuration.SFTP.HostKeyPath
+	}
+
+	if configuration.SFTP.AuthTimeoutSeconds > 0 {
+		cfg.SFTP.AuthTimeoutSeconds = configuration.SFTP.AuthTimeoutSeconds
+	}
+
+	if strings.TrimSpace(configuration.Paths.Data) != "" {
+		cfg.Paths.Data = configuration.Paths.Data
+	}
+
+	if strings.TrimSpace(configuration.Paths.Instances) != "" {
+		cfg.Paths.Instances = configuration.Paths.Instances
+	}
+
+	if strings.TrimSpace(configuration.Paths.Backups) != "" {
+		cfg.Paths.Backups = configuration.Paths.Backups
+	}
+
+	if strings.TrimSpace(configuration.Paths.BackupMounts) != "" {
+		cfg.Paths.BackupMounts = configuration.Paths.BackupMounts
+	}
+
+	if strings.TrimSpace(configuration.Runtime.Type) != "" {
+		cfg.Runtime.Type = configuration.Runtime.Type
+	}
+
+	if strings.TrimSpace(configuration.Docker.Network) != "" {
+		cfg.Docker.Network = configuration.Docker.Network
+	}
+
+	cfg.Allocations.Entries = configuration.Allocations.Entries
+	cfg.Allocations.IP = ""
+	cfg.Allocations.IPs = nil
+	cfg.Allocations.PortStart = 0
+	cfg.Allocations.PortEnd = 0
 }
 
 func Save(cfg Config) error {
@@ -329,9 +448,11 @@ func normalise(cfg *Config) {
 	cfg.Paths.Backups = filepath.Clean(cfg.Paths.Backups)
 	cfg.Paths.BackupMounts = filepath.Clean(cfg.Paths.BackupMounts)
 
+	cfg.Runtime.Type = strings.ToLower(strings.TrimSpace(cfg.Runtime.Type))
+	cfg.Docker.Network = strings.TrimSpace(cfg.Docker.Network)
+
 	cfg.Allocations.Entries = normaliseAllocationEntries(cfg.Allocations)
 
-	// Once exact entries exist they become the persisted source of truth.
 	cfg.Allocations.IP = ""
 	cfg.Allocations.IPs = nil
 	cfg.Allocations.PortStart = 0
@@ -359,8 +480,40 @@ func validate(cfg Config) error {
 		return fmt.Errorf("worker.listen is required")
 	}
 
+	if cfg.Worker.Token == "" {
+		return fmt.Errorf("worker.token is required")
+	}
+
+	if cfg.Node.ID == "" {
+		return fmt.Errorf("node.id is required")
+	}
+
+	if cfg.Paths.Data == "" || cfg.Paths.Data == "." {
+		return fmt.Errorf("paths.data is required")
+	}
+
 	if cfg.Paths.Instances == "" || cfg.Paths.Instances == "." {
 		return fmt.Errorf("paths.instances is required")
+	}
+
+	if cfg.Paths.Backups == "" || cfg.Paths.Backups == "." {
+		return fmt.Errorf("paths.backups is required")
+	}
+
+	if cfg.Paths.BackupMounts == "" || cfg.Paths.BackupMounts == "." {
+		return fmt.Errorf("paths.backup_mounts is required")
+	}
+
+	if cfg.Runtime.Type == "" {
+		return fmt.Errorf("runtime.type is required")
+	}
+
+	if cfg.Runtime.Type != "process" && cfg.Runtime.Type != "docker" {
+		return fmt.Errorf("unsupported runtime.type: %s", cfg.Runtime.Type)
+	}
+
+	if cfg.Runtime.Type == "docker" && cfg.Docker.Network == "" {
+		return fmt.Errorf("docker.network is required when runtime.type is docker")
 	}
 
 	if len(cfg.Allocations.Entries) == 0 {
@@ -410,18 +563,6 @@ func validate(cfg Config) error {
 
 		if cfg.SFTP.HostKeyPath == "" {
 			return fmt.Errorf("sftp.host_key_path is required")
-		}
-
-		if cfg.Worker.Token == "" {
-			return fmt.Errorf(
-				"worker.token is required when SFTP is enabled",
-			)
-		}
-
-		if cfg.Node.ID == "" {
-			return fmt.Errorf(
-				"node.id is required when SFTP is enabled",
-			)
 		}
 	}
 

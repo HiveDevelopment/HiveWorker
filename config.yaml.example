@@ -1,18 +1,37 @@
-listen_address: ":8080"
-api_token: "change-me"
+panel:
+  url: "https://panel.example.com"
+
+worker:
+  registration_token: "hpreg_your-registration-token"
+  token: ""
+  listen: "0.0.0.0:8080"
+
+sftp:
+  enabled: true
+  listen: "0.0.0.0:2022"
+  public_fqdn: "node.example.com"
+  public_port: 2022
+  host_key_path: "/etc/hivepanel/keys/sftp_host_ed25519"
+  auth_timeout_seconds: 10
+
+node:
+  id: ""
 
 paths:
-  data: "./data"
-  instances: "./instances"
-  backups: "./backups"
+  data: "/var/lib/hivepanel/data"
+  instances: "/var/lib/hivepanel/cells"
+  backups: "/var/lib/hivepanel/backups"
+  backup_mounts: "/var/lib/hivepanel/backup_mounts"
 
 runtime:
   type: "docker"
-  
+
 docker:
   network: "hivepanel"
 
 allocations:
-  ip: "0.0.0.0"
-  port_start: 25565
-  port_end: 25600
+  entries:
+    - ip: "0.0.0.0"
+      port: 25565
+    - ip: "0.0.0.0"
+      port: 25566

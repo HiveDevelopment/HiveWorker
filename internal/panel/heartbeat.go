@@ -11,6 +11,7 @@ import (
 
 	"hivepanel-worker/internal/config"
 	nodestats "hivepanel-worker/internal/node"
+	"hivepanel-worker/internal/version"
 )
 
 type HeartbeatPayload struct {
@@ -21,8 +22,8 @@ type HeartbeatPayload struct {
 }
 
 func StartHeartbeat(cfg config.Config) {
-	if cfg.Panel.URL == "" || cfg.Worker.Token == "" {
-		log.Println("Panel heartbeat disabled: missing panel URL or worker token")
+	if cfg.Panel.URL == "" || cfg.Worker.Token == "" || cfg.Node.ID == "" {
+		log.Println("Panel heartbeat disabled: missing panel URL, worker token or node ID")
 		return
 	}
 
@@ -48,7 +49,7 @@ func sendHeartbeat(cfg config.Config) {
 	}
 
 	payload := HeartbeatPayload{
-		Version:  "dev",
+		Version:  version.Version,
 		Hostname: hostname,
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,
 		Stats:    stats,
@@ -71,6 +72,7 @@ func sendHeartbeat(cfg config.Config) {
 	}
 
 	request.Header.Set("Authorization", "Bearer "+cfg.Worker.Token)
+	request.Header.Set("X-Hive-Node", cfg.Node.ID)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 
@@ -85,7 +87,8 @@ func sendHeartbeat(cfg config.Config) {
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
+	if response.StatusCode < http.StatusOK ||
+		response.StatusCode >= http.StatusMultipleChoices {
 		log.Println("Heartbeat failed with HTTP status:", response.StatusCode)
 		return
 	}
