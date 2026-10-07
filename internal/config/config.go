@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"time"
@@ -401,6 +402,80 @@ func applyRegistrationConfiguration(
 	cfg.Allocations.IPs = nil
 	cfg.Allocations.PortStart = 0
 	cfg.Allocations.PortEnd = 0
+}
+
+// ApplyRemoteConfiguration applies a complete configuration returned by
+// HivePanel during a heartbeat. Authentication material and the local
+// config path are intentionally preserved.
+//
+// It returns true when the persisted configuration changed and the Worker
+// should restart so listeners/runtime services are recreated with the new
+// settings.
+func ApplyRemoteConfiguration(cfg Config, raw json.RawMessage) (bool, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false, nil
+	}
+
+	var remote registrationConfiguration
+
+	if err := json.Unmarshal(raw, &remote); err != nil {
+		return false, fmt.Errorf("failed to decode heartbeat configuration: %w", err)
+	}
+
+	candidate := cfg
+
+	// The heartbeat response is a complete desired configuration, so these
+	// values are assigned exactly. Worker credentials and node identity are
+	// deliberately not part of registrationConfiguration and remain local.
+	candidate.Panel.URL = remote.Panel.URL
+	candidate.Worker.Listen = remote.Worker.Listen
+	candidate.Worker.SSL.Enabled = remote.Worker.SSL.Enabled
+	candidate.Worker.SSL.Auto = remote.Worker.SSL.Auto
+	candidate.Worker.SSL.Hostname = remote.Worker.SSL.Hostname
+	candidate.Worker.SSL.Email = remote.Worker.SSL.Email
+	candidate.Worker.SSL.Cert = remote.Worker.SSL.Cert
+	candidate.Worker.SSL.Key = remote.Worker.SSL.Key
+
+	candidate.SFTP.Enabled = remote.SFTP.Enabled
+	candidate.SFTP.Listen = remote.SFTP.Listen
+	candidate.SFTP.PublicFQDN = remote.SFTP.PublicFQDN
+	candidate.SFTP.PublicPort = remote.SFTP.PublicPort
+	candidate.SFTP.HostKeyPath = remote.SFTP.HostKeyPath
+	candidate.SFTP.AuthTimeoutSeconds = remote.SFTP.AuthTimeoutSeconds
+
+	candidate.Paths.Data = remote.Paths.Data
+	candidate.Paths.Instances = remote.Paths.Instances
+	candidate.Paths.Backups = remote.Paths.Backups
+	candidate.Paths.BackupMounts = remote.Paths.BackupMounts
+
+	candidate.Runtime.Type = remote.Runtime.Type
+	candidate.Docker.Network = remote.Docker.Network
+
+	candidate.Allocations.Entries = remote.Allocations.Entries
+	candidate.Allocations.IP = ""
+	candidate.Allocations.IPs = nil
+	candidate.Allocations.PortStart = 0
+	candidate.Allocations.PortEnd = 0
+
+	// Environment variables remain authoritative. This also prevents a
+	// heartbeat/restart loop when an installation intentionally overrides a
+	// Panel-provided setting through the environment.
+	applyEnvironmentOverrides(&candidate)
+	normalise(&candidate)
+
+	if err := validate(candidate); err != nil {
+		return false, fmt.Errorf("panel returned invalid heartbeat configuration: %w", err)
+	}
+
+	if reflect.DeepEqual(cfg, candidate) {
+		return false, nil
+	}
+
+	if err := Save(candidate); err != nil {
+		return false, fmt.Errorf("failed to persist heartbeat configuration: %w", err)
+	}
+
+	return true, nil
 }
 
 func Save(cfg Config) error {

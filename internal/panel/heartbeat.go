@@ -21,6 +21,13 @@ type HeartbeatPayload struct {
 	Stats    any    `json:"stats"`
 }
 
+type heartbeatResponse struct {
+	OK            bool            `json:"ok"`
+	NodeID        string          `json:"node_id"`
+	Timestamp     string          `json:"timestamp"`
+	Configuration json.RawMessage `json:"configuration"`
+}
+
 func StartHeartbeat(cfg config.Config) {
 	if cfg.Panel.URL == "" || cfg.Worker.Token == "" || cfg.Node.ID == "" {
 		log.Println("Panel heartbeat disabled: missing panel URL, worker token or node ID")
@@ -31,21 +38,27 @@ func StartHeartbeat(cfg config.Config) {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 
-		sendHeartbeat(cfg)
+		if sendHeartbeat(cfg) {
+			return
+		}
 
 		for range ticker.C {
-			sendHeartbeat(cfg)
+			if sendHeartbeat(cfg) {
+				return
+			}
 		}
 	}()
 }
 
-func sendHeartbeat(cfg config.Config) {
+// sendHeartbeat returns true when a new configuration was persisted and a
+// Worker restart has been scheduled.
+func sendHeartbeat(cfg config.Config) bool {
 	hostname, _ := os.Hostname()
 
 	stats, err := nodestats.GetStats(cfg.Paths.Data)
 	if err != nil {
 		log.Println("Failed to collect node stats:", err)
-		return
+		return false
 	}
 
 	payload := HeartbeatPayload{
@@ -58,7 +71,7 @@ func sendHeartbeat(cfg config.Config) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Println("Failed to encode heartbeat:", err)
-		return
+		return false
 	}
 
 	request, err := http.NewRequest(
@@ -68,7 +81,7 @@ func sendHeartbeat(cfg config.Config) {
 	)
 	if err != nil {
 		log.Println("Failed to build heartbeat request:", err)
-		return
+		return false
 	}
 
 	request.Header.Set("Authorization", "Bearer "+cfg.Worker.Token)
@@ -83,15 +96,47 @@ func sendHeartbeat(cfg config.Config) {
 	response, err := client.Do(request)
 	if err != nil {
 		log.Println("Failed to send heartbeat:", err)
-		return
+		return false
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode < http.StatusOK ||
 		response.StatusCode >= http.StatusMultipleChoices {
 		log.Println("Heartbeat failed with HTTP status:", response.StatusCode)
-		return
+		return false
 	}
+
+	var result heartbeatResponse
+
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		log.Println("Failed to decode heartbeat response:", err)
+		return false
+	}
+
+	changed, err := config.ApplyRemoteConfiguration(
+		cfg,
+		result.Configuration,
+	)
+	if err != nil {
+		log.Println("Failed to apply Panel configuration:", err)
+		return false
+	}
+
+	if !changed {
+		return false
+	}
+
+	log.Println("Worker configuration changed; restarting HiveWorker...")
+
+	// Give the heartbeat request time to finish cleanly before exiting.
+	// The standard HivePanel systemd unit uses Restart=always, so systemd
+	// immediately starts the Worker again with the newly persisted config.
+	go func() {
+		time.Sleep(time.Second)
+		os.Exit(0)
+	}()
+
+	return true
 }
 
 func trimSlash(value string) string {
