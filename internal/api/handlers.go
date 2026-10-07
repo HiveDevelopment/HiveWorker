@@ -1032,19 +1032,34 @@ func (h *Handler) InstallCell(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 
 	if invalidCellID(id) {
-		http.Error(w, "invalid cell id", http.StatusBadRequest)
+		http.Error(
+			w,
+			"invalid cell id",
+			http.StatusBadRequest,
+		)
 		return
 	}
 
-	if err := h.Manager.Install(id); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	/*
+		Start the installation asynchronously.
 
-	writeJSON(w, map[string]any{
-		"message": "install completed",
-		"id":      id,
-	})
+		Comb installations can take several minutes, particularly when
+		SteamCMD is downloading a large game such as Rust. The HTTP
+		request must return immediately rather than remaining open for
+		the lifetime of the installation.
+	*/
+	go func() {
+		_ = h.Manager.Install(id)
+	}()
+
+	writeJSONStatus(
+		w,
+		http.StatusAccepted,
+		map[string]any{
+			"message": "install started",
+			"id":      id,
+		},
+	)
 }
 
 func (h *Handler) ReinstallCell(w http.ResponseWriter, r *http.Request) {
