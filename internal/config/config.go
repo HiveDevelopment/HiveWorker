@@ -37,9 +37,19 @@ type PanelConfig struct {
 }
 
 type WorkerConfig struct {
-	Token             string `yaml:"token"`
-	RegistrationToken string `yaml:"registration_token"`
-	Listen            string `yaml:"listen"`
+	Token             string          `yaml:"token"`
+	RegistrationToken string          `yaml:"registration_token"`
+	Listen            string          `yaml:"listen"`
+	SSL               WorkerSSLConfig `yaml:"ssl"`
+}
+
+type WorkerSSLConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Auto     bool   `yaml:"auto"`
+	Hostname string `yaml:"hostname"`
+	Email    string `yaml:"email"`
+	Cert     string `yaml:"cert"`
+	Key      string `yaml:"key"`
 }
 
 type SFTPConfig struct {
@@ -111,7 +121,17 @@ type registrationPanelConfig struct {
 }
 
 type registrationWorkerConfig struct {
-	Listen string `json:"listen"`
+	Listen string                      `json:"listen"`
+	SSL    registrationWorkerSSLConfig `json:"ssl"`
+}
+
+type registrationWorkerSSLConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Auto     bool   `json:"auto"`
+	Hostname string `json:"hostname"`
+	Email    string `json:"email"`
+	Cert     string `json:"cert"`
+	Key      string `json:"key"`
 }
 
 type registrationSFTPConfig struct {
@@ -181,6 +201,14 @@ func Default() Config {
 		Worker: WorkerConfig{
 			Token:  "",
 			Listen: "0.0.0.0:8080",
+			SSL: WorkerSSLConfig{
+				Enabled:  false,
+				Auto:     false,
+				Hostname: "",
+				Email:    "",
+				Cert:     "",
+				Key:      "",
+			},
 		},
 
 		SFTP: SFTPConfig{
@@ -305,6 +333,25 @@ func applyRegistrationConfiguration(
 		cfg.Worker.Listen = configuration.Worker.Listen
 	}
 
+	cfg.Worker.SSL.Enabled = configuration.Worker.SSL.Enabled
+	cfg.Worker.SSL.Auto = configuration.Worker.SSL.Auto
+
+	if strings.TrimSpace(configuration.Worker.SSL.Hostname) != "" {
+		cfg.Worker.SSL.Hostname = configuration.Worker.SSL.Hostname
+	}
+
+	if strings.TrimSpace(configuration.Worker.SSL.Email) != "" {
+		cfg.Worker.SSL.Email = configuration.Worker.SSL.Email
+	}
+
+	if strings.TrimSpace(configuration.Worker.SSL.Cert) != "" {
+		cfg.Worker.SSL.Cert = configuration.Worker.SSL.Cert
+	}
+
+	if strings.TrimSpace(configuration.Worker.SSL.Key) != "" {
+		cfg.Worker.SSL.Key = configuration.Worker.SSL.Key
+	}
+
 	cfg.SFTP.Enabled = configuration.SFTP.Enabled
 
 	if strings.TrimSpace(configuration.SFTP.Listen) != "" {
@@ -392,6 +439,44 @@ func applyEnvironmentOverrides(cfg *Config) {
 		cfg.Node.ID = value
 	}
 
+	if value := os.Getenv("HIVEPANEL_WORKER_LISTEN"); value != "" {
+		cfg.Worker.Listen = value
+	}
+
+	if value := os.Getenv("HIVEPANEL_WORKER_SSL_ENABLED"); value != "" {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "1", "true", "yes", "on":
+			cfg.Worker.SSL.Enabled = true
+		case "0", "false", "no", "off":
+			cfg.Worker.SSL.Enabled = false
+		}
+	}
+
+	if value := os.Getenv("HIVEPANEL_WORKER_SSL_AUTO"); value != "" {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "1", "true", "yes", "on":
+			cfg.Worker.SSL.Auto = true
+		case "0", "false", "no", "off":
+			cfg.Worker.SSL.Auto = false
+		}
+	}
+
+	if value := os.Getenv("HIVEPANEL_WORKER_SSL_HOSTNAME"); value != "" {
+		cfg.Worker.SSL.Hostname = value
+	}
+
+	if value := os.Getenv("HIVEPANEL_WORKER_SSL_EMAIL"); value != "" {
+		cfg.Worker.SSL.Email = value
+	}
+
+	if value := os.Getenv("HIVEPANEL_WORKER_SSL_CERT"); value != "" {
+		cfg.Worker.SSL.Cert = value
+	}
+
+	if value := os.Getenv("HIVEPANEL_WORKER_SSL_KEY"); value != "" {
+		cfg.Worker.SSL.Key = value
+	}
+
 	if value := os.Getenv("HIVEPANEL_SFTP_LISTEN"); value != "" {
 		cfg.SFTP.Listen = value
 	}
@@ -432,6 +517,10 @@ func applyEnvironmentOverrides(cfg *Config) {
 func normalise(cfg *Config) {
 	cfg.Panel.URL = trimSlash(strings.TrimSpace(cfg.Panel.URL))
 	cfg.Worker.Listen = strings.TrimSpace(cfg.Worker.Listen)
+	cfg.Worker.SSL.Hostname = strings.TrimSpace(cfg.Worker.SSL.Hostname)
+	cfg.Worker.SSL.Email = strings.TrimSpace(cfg.Worker.SSL.Email)
+	cfg.Worker.SSL.Cert = strings.TrimSpace(cfg.Worker.SSL.Cert)
+	cfg.Worker.SSL.Key = strings.TrimSpace(cfg.Worker.SSL.Key)
 
 	cfg.Node.ID = strings.TrimSpace(cfg.Node.ID)
 
@@ -478,6 +567,22 @@ func validate(cfg Config) error {
 
 	if cfg.Worker.Token == "" {
 		return fmt.Errorf("worker.token is required")
+	}
+
+	if cfg.Worker.SSL.Enabled {
+		if cfg.Worker.SSL.Auto {
+			if cfg.Worker.SSL.Hostname == "" {
+				return fmt.Errorf("worker.ssl.hostname is required when automatic worker SSL is enabled")
+			}
+		} else {
+			if cfg.Worker.SSL.Cert == "" {
+				return fmt.Errorf("worker.ssl.cert is required when worker SSL is enabled")
+			}
+
+			if cfg.Worker.SSL.Key == "" {
+				return fmt.Errorf("worker.ssl.key is required when worker SSL is enabled")
+			}
+		}
 	}
 
 	if cfg.Node.ID == "" {

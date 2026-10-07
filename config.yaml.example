@@ -5,6 +5,10 @@ worker:
   registration_token: "hpreg_your-registration-token"
   token: ""
   listen: "0.0.0.0:8080"
+  ssl:
+    enabled: false
+    cert: ""
+    key: ""
 
 sftp:
   enabled: true

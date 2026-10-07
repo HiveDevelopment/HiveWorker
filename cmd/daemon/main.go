@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"hivepanel-worker/internal/allocation"
 	"hivepanel-worker/internal/api"
@@ -16,6 +18,8 @@ import (
 	processruntime "hivepanel-worker/internal/runtime/process"
 	workersftp "hivepanel-worker/internal/sftp"
 	"hivepanel-worker/internal/updater"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 func main() {
@@ -121,9 +125,15 @@ func main() {
 		updateManager,
 	)
 
-	log.Println(
-		"HivePanel Worker running on " +
-			cfg.Worker.Listen,
+	protocol := "http"
+	if cfg.Worker.SSL.Enabled {
+		protocol = "https"
+	}
+
+	log.Printf(
+		"HivePanel Worker running on %s://%s",
+		protocol,
+		cfg.Worker.Listen,
 	)
 
 	log.Println(
@@ -136,10 +146,58 @@ func main() {
 		len(cfg.Allocations.Entries),
 	)
 
-	log.Fatal(
-		http.ListenAndServe(
-			cfg.Worker.Listen,
-			router,
-		),
-	)
+	server := &http.Server{
+		Addr:    cfg.Worker.Listen,
+		Handler: router,
+	}
+
+	if cfg.Worker.SSL.Enabled {
+		if cfg.Worker.SSL.Auto {
+			cacheDir := "/etc/hivepanel/ssl/acme"
+			if err := os.MkdirAll(cacheDir, 0700); err != nil {
+				log.Fatal("failed to create ACME certificate cache: ", err)
+			}
+
+			manager := &autocert.Manager{
+				Prompt:     autocert.AcceptTOS,
+				Cache:      autocert.DirCache(filepath.Clean(cacheDir)),
+				HostPolicy: autocert.HostWhitelist(cfg.Worker.SSL.Hostname),
+				Email:      cfg.Worker.SSL.Email,
+			}
+
+			challengeServer := &http.Server{
+				Addr:    ":80",
+				Handler: manager.HTTPHandler(nil),
+			}
+
+			go func() {
+				log.Printf(
+					"HivePanel ACME HTTP-01 challenge server running on :80 for %s",
+					cfg.Worker.SSL.Hostname,
+				)
+
+				if err := challengeServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Fatal("ACME HTTP-01 challenge server stopped: ", err)
+				}
+			}()
+
+			server.TLSConfig = manager.TLSConfig()
+
+			log.Printf(
+				"HivePanel Worker automatic TLS enabled for %s",
+				cfg.Worker.SSL.Hostname,
+			)
+
+			log.Fatal(server.ListenAndServeTLS("", ""))
+		}
+
+		log.Fatal(
+			server.ListenAndServeTLS(
+				cfg.Worker.SSL.Cert,
+				cfg.Worker.SSL.Key,
+			),
+		)
+	}
+
+	log.Fatal(server.ListenAndServe())
 }
