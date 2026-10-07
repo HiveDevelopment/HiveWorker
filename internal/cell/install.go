@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"os"
 
+	"hivepanel-worker/internal/comb"
 	"hivepanel-worker/internal/install"
 )
 
-func (m *Manager) Install(id string) error {
+func (m *Manager) StartInstall(id string) error {
 	m.mutex.Lock()
 
 	gameCell, exists := m.cells[id]
@@ -22,31 +23,52 @@ func (m *Manager) Install(id string) error {
 		return errors.New("cell must be stopped before installing")
 	}
 
+	if gameCell.InstallStatus == "installing" {
+		m.mutex.Unlock()
+		return errors.New("cell installation is already running")
+	}
+
 	selectedComb, err := m.resolveCellComb(gameCell)
 	if err != nil {
 		m.mutex.Unlock()
 		return err
 	}
 
+	gameCell.InstallStatus = "installing"
+	gameCell.InstallError = ""
+	_ = m.save(gameCell)
 	m.broadcast(gameCell, "Install started.")
 
 	dir := gameCell.Dir
-	steps := selectedComb.Install
-	variables := gameCell.Variables
+	steps := append([]comb.InstallStep(nil), selectedComb.Install...)
+	variables := make(map[string]string, len(gameCell.Variables))
+	for key, value := range gameCell.Variables {
+		variables[key] = value
+	}
 
 	m.mutex.Unlock()
 
-	err = install.Run(
+	go m.runInstall(id, dir, variables, steps)
+	return nil
+}
+
+func (m *Manager) Install(id string) error {
+	if err := m.StartInstall(id); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) runInstall(id, dir string, variables map[string]string, steps []comb.InstallStep) {
+	err := install.Run(
 		dir,
 		variables,
 		steps,
 		func(line string) {
 			m.mutex.Lock()
-
 			if gameCell, exists := m.cells[id]; exists {
 				m.broadcast(gameCell, line)
 			}
-
 			m.mutex.Unlock()
 		},
 	)
@@ -56,19 +78,33 @@ func (m *Manager) Install(id string) error {
 
 	if gameCell, exists := m.cells[id]; exists {
 		if err != nil {
-			m.broadcast(
-				gameCell,
-				"Install failed: "+err.Error(),
-			)
+			gameCell.InstallStatus = "failed"
+			gameCell.InstallError = err.Error()
+			m.broadcast(gameCell, "Install failed: "+err.Error())
 		} else {
-			m.broadcast(
-				gameCell,
-				"Install completed.",
-			)
+			gameCell.InstallStatus = "installed"
+			gameCell.InstallError = ""
+			m.broadcast(gameCell, "Install completed.")
 		}
+		_ = m.save(gameCell)
+	}
+}
+
+func (m *Manager) InstallState(id string) (string, string, error) {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	gameCell, exists := m.cells[id]
+	if !exists {
+		return "", "", errors.New("cell not found")
 	}
 
-	return err
+	status := gameCell.InstallStatus
+	if status == "" {
+		status = "idle"
+	}
+
+	return status, gameCell.InstallError, nil
 }
 
 func (m *Manager) Reinstall(id string) error {

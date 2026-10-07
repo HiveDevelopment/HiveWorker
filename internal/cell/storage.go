@@ -109,6 +109,7 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		Startup:               request.Startup,
 		CreatedAt:             time.Now().UTC().Format(time.RFC3339),
 		Status:                "offline",
+		InstallStatus:         "idle",
 
 		console:     []ConsoleEntry{},
 		subscribers: map[chan ConsoleEntry]bool{},

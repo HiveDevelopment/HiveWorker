@@ -30,6 +30,9 @@ type Cell struct {
 	CreatedAt string `json:"created_at"`
 	Status    string `json:"status"`
 
+	InstallStatus string `json:"install_status,omitempty"`
+	InstallError  string `json:"install_error,omitempty"`
+
 	Comb                  string                  `json:"comb"`
 	CombData              map[string]any          `json:"comb_data,omitempty"`
 	Variables             map[string]string       `json:"variables"`

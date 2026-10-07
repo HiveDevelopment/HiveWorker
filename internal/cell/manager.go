@@ -68,6 +68,13 @@ func (m *Manager) Load() error {
 		gameCell.console = []ConsoleEntry{}
 		gameCell.subscribers = map[chan ConsoleEntry]bool{}
 
+		// Install processes are not resumable across a Worker restart.
+		if gameCell.InstallStatus == "installing" {
+			gameCell.InstallStatus = "failed"
+			gameCell.InstallError = "installation was interrupted by a Worker restart"
+			_ = m.save(&gameCell)
+		}
+
 		if gameCell.AdditionalAllocations == nil {
 			gameCell.AdditionalAllocations = []allocation.Allocation{}
 		}
