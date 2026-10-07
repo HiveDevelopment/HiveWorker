@@ -27,6 +27,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p dist
+
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags "-s -w -X hivepanel-worker/internal/version.Version=$VERSION" \
             -o dist/hiveworker_linux_amd64 \
@@ -46,9 +47,20 @@ jobs:
           chmod +x dist/hiveworker_linux_amd64
           chmod +x dist/hiveworker_linux_arm64
 
+      - name: Generate SHA-256 checksums
+        working-directory: dist
+        run: |
+          sha256sum \
+            hiveworker_linux_amd64 \
+            hiveworker_linux_arm64 \
+            > checksums.txt
+
+          cat checksums.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/hiveworker_linux_amd64
             dist/hiveworker_linux_arm64
+            dist/checksums.txt

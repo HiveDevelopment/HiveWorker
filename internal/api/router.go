@@ -8,9 +8,10 @@ import (
 	"hivepanel-worker/internal/cell"
 	"hivepanel-worker/internal/comb"
 	"hivepanel-worker/internal/config"
+	"hivepanel-worker/internal/updater"
 )
 
-func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manager, backupMounts *backup.MountService) http.Handler {
+func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manager, backupMounts *backup.MountService, updateManager *updater.Manager) http.Handler {
 	mux := http.NewServeMux()
 
 	handler := &Handler{
@@ -26,6 +27,9 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 
 	mux.Handle("GET /version", auth.Middleware(cfg, http.HandlerFunc(handler.Version)))
 	mux.Handle("GET /node/stats", auth.Middleware(cfg, http.HandlerFunc(handler.NodeStats)))
+
+	mux.Handle("POST /update", auth.Middleware(cfg, http.HandlerFunc(handler.UpdateWorker)))
+	mux.Handle("GET /update/status", auth.Middleware(cfg, http.HandlerFunc(handler.WorkerUpdateStatus)))
 
 	mux.Handle("PATCH /configuration/allocations", auth.Middleware(cfg, http.HandlerFunc(handler.UpdateAllocationConfiguration)))
 

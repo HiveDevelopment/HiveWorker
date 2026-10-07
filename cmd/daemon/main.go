@@ -15,6 +15,7 @@ import (
 	dockerruntime "hivepanel-worker/internal/runtime/docker"
 	processruntime "hivepanel-worker/internal/runtime/process"
 	workersftp "hivepanel-worker/internal/sftp"
+	"hivepanel-worker/internal/updater"
 )
 
 func main() {
@@ -110,11 +111,14 @@ func main() {
 		log.Println("HivePanel SFTP server is disabled")
 	}
 
+	updateManager := updater.NewManager()
+
 	router := api.NewRouter(
 		cfg,
 		cellManager,
 		combManager,
 		backupMountService,
+		updateManager,
 	)
 
 	log.Println(

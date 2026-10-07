@@ -23,6 +23,7 @@ import (
 	"hivepanel-worker/internal/migrationdetect"
 	"hivepanel-worker/internal/node"
 	"hivepanel-worker/internal/players"
+	"hivepanel-worker/internal/updater"
 )
 
 type Handler struct {
@@ -30,6 +31,7 @@ type Handler struct {
 	Manager      *cell.Manager
 	CombManager  *comb.Manager
 	BackupMounts *backup.MountService
+	Updater      *updater.Manager
 }
 
 type CommandRequest struct {
