@@ -14,6 +14,15 @@ func (h *Handler) UpdateWorker(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
+	if h.Updater == nil {
+		http.Error(
+			w,
+			"Worker updater is not available",
+			http.StatusServiceUnavailable,
+		)
+		return
+	}
+
 	var request WorkerUpdateRequest
 
 	decoder := json.NewDecoder(r.Body)
@@ -48,13 +57,25 @@ func (h *Handler) UpdateWorker(
 		return
 	}
 
-	w.WriteHeader(http.StatusAccepted)
-	writeJSON(w, h.Updater.Status())
+	writeJSONStatus(
+		w,
+		http.StatusAccepted,
+		h.Updater.Status(),
+	)
 }
 
 func (h *Handler) WorkerUpdateStatus(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
+	if h.Updater == nil {
+		http.Error(
+			w,
+			"Worker updater is not available",
+			http.StatusServiceUnavailable,
+		)
+		return
+	}
+
 	writeJSON(w, h.Updater.Status())
 }

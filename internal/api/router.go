@@ -19,6 +19,7 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 		Manager:      manager,
 		CombManager:  combManager,
 		BackupMounts: backupMounts,
+		Updater:      updateManager,
 	}
 
 	mux.HandleFunc("GET /health", handler.Health)

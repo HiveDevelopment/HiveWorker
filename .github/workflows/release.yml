@@ -22,30 +22,63 @@ jobs:
         with:
           go-version: "1.24.x"
 
-      - name: Build Linux AMD64
+      - name: Create dist directory
+        run: mkdir -p dist
+
+      # ------------------------------------------------------------
+      # AMD64
+      # ------------------------------------------------------------
+
+      - name: Build HiveWorker Linux AMD64
         env:
           VERSION: ${{ github.ref_name }}
         run: |
-          mkdir -p dist
-
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
             -ldflags "-s -w -X hivepanel-worker/internal/version.Version=$VERSION" \
             -o dist/hiveworker_linux_amd64 \
             ./cmd/daemon
 
-      - name: Build Linux ARM64
+      - name: Build HiveWorker Updater Linux AMD64
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags "-s -w" \
+            -o dist/hiveworker-updater_linux_amd64 \
+            ./cmd/updater
+
+      # ------------------------------------------------------------
+      # ARM64
+      # ------------------------------------------------------------
+
+      - name: Build HiveWorker Linux ARM64
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -trimpath \
             -ldflags "-s -w -X hivepanel-worker/internal/version.Version=$VERSION" \
             -o dist/hiveworker_linux_arm64 \
             ./cmd/daemon
+
+      - name: Build HiveWorker Updater Linux ARM64
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -trimpath \
+            -ldflags "-s -w" \
+            -o dist/hiveworker-updater_linux_arm64 \
+            ./cmd/updater
+
+      # ------------------------------------------------------------
+      # Release preparation
+      # ------------------------------------------------------------
 
       - name: Make binaries executable
         run: |
           chmod +x dist/hiveworker_linux_amd64
           chmod +x dist/hiveworker_linux_arm64
+          chmod +x dist/hiveworker-updater_linux_amd64
+          chmod +x dist/hiveworker-updater_linux_arm64
 
       - name: Generate SHA-256 checksums
         working-directory: dist
@@ -53,9 +86,15 @@ jobs:
           sha256sum \
             hiveworker_linux_amd64 \
             hiveworker_linux_arm64 \
+            hiveworker-updater_linux_amd64 \
+            hiveworker-updater_linux_arm64 \
             > checksums.txt
 
           cat checksums.txt
+
+      # ------------------------------------------------------------
+      # GitHub Release
+      # ------------------------------------------------------------
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -63,4 +102,6 @@ jobs:
           files: |
             dist/hiveworker_linux_amd64
             dist/hiveworker_linux_arm64
+            dist/hiveworker-updater_linux_amd64
+            dist/hiveworker-updater_linux_arm64
             dist/checksums.txt
