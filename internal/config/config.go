@@ -512,10 +512,6 @@ func validate(cfg Config) error {
 		return fmt.Errorf("docker.network is required when runtime.type is docker")
 	}
 
-	if len(cfg.Allocations.Entries) == 0 {
-		return fmt.Errorf("at least one allocations.entries item is required")
-	}
-
 	seenAllocations := map[string]bool{}
 
 	for _, item := range cfg.Allocations.Entries {
