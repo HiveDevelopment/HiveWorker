@@ -40,8 +40,8 @@ type Cell struct {
 	Docker                DockerConfig            `json:"docker"`
 	Startup               StartupConfig           `json:"startup"`
 
-	console     []string
-	subscribers map[chan string]bool
+	console     []ConsoleEntry
+	subscribers map[chan ConsoleEntry]bool
 
 	Lock CellLock `json:"lock"`
 }

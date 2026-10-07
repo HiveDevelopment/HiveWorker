@@ -65,8 +65,8 @@ func (m *Manager) Load() error {
 			continue
 		}
 
-		gameCell.console = []string{}
-		gameCell.subscribers = map[chan string]bool{}
+		gameCell.console = []ConsoleEntry{}
+		gameCell.subscribers = map[chan ConsoleEntry]bool{}
 
 		if gameCell.AdditionalAllocations == nil {
 			gameCell.AdditionalAllocations = []allocation.Allocation{}

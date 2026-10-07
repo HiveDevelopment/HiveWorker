@@ -972,8 +972,9 @@ func (h *Handler) ConsoleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if err := conn.WriteJSON(map[string]any{
-				"type": "console",
-				"line": line,
+				"type":      "console",
+				"line":      line.Message,
+				"timestamp": line.Timestamp,
 			}); err != nil {
 				return
 			}

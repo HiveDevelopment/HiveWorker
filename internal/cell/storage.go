@@ -110,8 +110,8 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		CreatedAt:             time.Now().UTC().Format(time.RFC3339),
 		Status:                "offline",
 
-		console:     []string{},
-		subscribers: map[chan string]bool{},
+		console:     []ConsoleEntry{},
+		subscribers: map[chan ConsoleEntry]bool{},
 	}
 
 	if err := os.MkdirAll(dir, 0755); err != nil {

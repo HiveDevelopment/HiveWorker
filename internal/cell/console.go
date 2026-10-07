@@ -1,8 +1,16 @@
 package cell
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
-func (m *Manager) Console(id string) ([]string, error) {
+type ConsoleEntry struct {
+	Timestamp string `json:"timestamp"`
+	Message   string `json:"message"`
+}
+
+func (m *Manager) Console(id string) ([]ConsoleEntry, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
@@ -11,7 +19,7 @@ func (m *Manager) Console(id string) ([]string, error) {
 		return nil, errors.New("cell not found")
 	}
 
-	lines := make([]string, len(cell.console))
+	lines := make([]ConsoleEntry, len(cell.console))
 	copy(lines, cell.console)
 
 	return lines, nil
@@ -31,12 +39,12 @@ func (m *Manager) ClearConsole(id string) error {
 	return nil
 }
 
-func (m *Manager) Subscribe(id string) (chan string, error) {
+func (m *Manager) Subscribe(id string) (chan ConsoleEntry, error) {
 	return m.SubscribeWithHistory(id, true)
 }
 
-func (m *Manager) SubscribeWithHistory(id string, includeHistory bool) (chan string, error) {
-	ch := make(chan string, 100)
+func (m *Manager) SubscribeWithHistory(id string, includeHistory bool) (chan ConsoleEntry, error) {
+	ch := make(chan ConsoleEntry, 100)
 
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -48,7 +56,7 @@ func (m *Manager) SubscribeWithHistory(id string, includeHistory bool) (chan str
 	}
 
 	if cell.subscribers == nil {
-		cell.subscribers = map[chan string]bool{}
+		cell.subscribers = map[chan ConsoleEntry]bool{}
 	}
 
 	cell.subscribers[ch] = true
@@ -66,7 +74,7 @@ func (m *Manager) SubscribeWithHistory(id string, includeHistory bool) (chan str
 	return ch, nil
 }
 
-func (m *Manager) Unsubscribe(id string, ch chan string) {
+func (m *Manager) Unsubscribe(id string, ch chan ConsoleEntry) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -83,7 +91,12 @@ func (m *Manager) Unsubscribe(id string, ch chan string) {
 }
 
 func (m *Manager) broadcast(cell *Cell, line string) {
-	cell.console = append(cell.console, line)
+	entry := ConsoleEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Message:   line,
+	}
+
+	cell.console = append(cell.console, entry)
 	m.trimConsole(cell)
 
 	if cell.subscribers == nil {
@@ -92,7 +105,7 @@ func (m *Manager) broadcast(cell *Cell, line string) {
 
 	for ch := range cell.subscribers {
 		select {
-		case ch <- line:
+		case ch <- entry:
 		default:
 			// Do not block the whole manager if a client is slow/disconnected.
 		}
@@ -100,7 +113,7 @@ func (m *Manager) broadcast(cell *Cell, line string) {
 }
 
 func (m *Manager) trimConsole(cell *Cell) {
-	maxLines := 300
+	maxLines := 500
 
 	if len(cell.console) > maxLines {
 		cell.console = cell.console[len(cell.console)-maxLines:]
