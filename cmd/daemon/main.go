@@ -115,7 +115,10 @@ func main() {
 		log.Println("HivePanel SFTP server is disabled")
 	}
 
-	updateManager := updater.NewManager(cfg.Worker.Listen)
+	updateManager := updater.NewManager(
+		cfg.Worker.Listen,
+		cfg.Worker.SSL.Enabled,
+	)
 
 	router := api.NewRouter(
 		cfg,

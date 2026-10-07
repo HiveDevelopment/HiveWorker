@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
@@ -693,6 +694,21 @@ func waitForHealth(
 ) error {
 	client := &http.Client{
 		Timeout: 3 * time.Second,
+	}
+
+	if strings.HasPrefix(
+		strings.ToLower(url),
+		"https://",
+	) {
+		// The updater checks the Worker over loopback. Native TLS
+		// certificates are issued for the public Worker hostname, not
+		// 127.0.0.1, so hostname verification is intentionally skipped
+		// for this local health probe only.
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // #nosec G402 -- loopback health check only
+			},
+		}
 	}
 
 	deadline := time.Now().Add(timeout)

@@ -56,12 +56,12 @@ type Manager struct {
 	healthURL string
 }
 
-func NewManager(workerListen string) *Manager {
+func NewManager(workerListen string, tlsEnabled bool) *Manager {
 	return &Manager{
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
-		healthURL: healthURLFromListen(workerListen),
+		healthURL: healthURLFromListen(workerListen, tlsEnabled),
 		status: Status{
 			State:          "idle",
 			CurrentVersion: workerversion.Version,
@@ -808,6 +808,7 @@ func launchUpdaterHelper(
 
 func healthURLFromListen(
 	listen string,
+	tlsEnabled bool,
 ) string {
 	listen = strings.TrimSpace(listen)
 
@@ -836,7 +837,12 @@ func healthURLFromListen(
 				return ""
 			}
 
-			return "http://127.0.0.1:" +
+			scheme := "http"
+			if tlsEnabled {
+				scheme = "https"
+			}
+
+			return scheme + "://127.0.0.1:" +
 				port +
 				"/health"
 		}
@@ -859,7 +865,12 @@ func healthURLFromListen(
 		host = "127.0.0.1"
 	}
 
-	return "http://" +
+	scheme := "http"
+	if tlsEnabled {
+		scheme = "https"
+	}
+
+	return scheme + "://" +
 		net.JoinHostPort(
 			host,
 			port,
