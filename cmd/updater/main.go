@@ -16,11 +16,12 @@ import (
 const (
 	defaultBinaryPath = "/usr/local/bin/hiveworker"
 	defaultService    = "hiveworker"
-	defaultHealthURL  = "http://127.0.0.1:8080/health"
 
-	waitForExitTimeout = 30 * time.Second
-	healthTimeout      = 60 * time.Second
-	healthInterval     = 2 * time.Second
+	exitTimeout     = 30 * time.Second
+	restartTimeout  = 60 * time.Second
+	healthTimeout   = 60 * time.Second
+	healthInterval  = 2 * time.Second
+	processInterval = 250 * time.Millisecond
 )
 
 func main() {
@@ -71,7 +72,7 @@ func main() {
 	flag.StringVar(
 		&healthURL,
 		"health-url",
-		defaultHealthURL,
+		"",
 		"HiveWorker health endpoint",
 	)
 
@@ -91,38 +92,103 @@ func main() {
 		fatal("missing --target")
 	}
 
+	healthURL = strings.TrimSpace(healthURL)
+	if healthURL == "" {
+		fatal("missing --health-url")
+	}
+
 	if os.Geteuid() != 0 {
 		fatal("updater must run as root")
 	}
 
-	if err := validateStagedBinary(stagedPath); err != nil {
-		fatal("staged binary validation failed: %v", err)
+	if err := validateStagedBinary(
+		stagedPath,
+	); err != nil {
+		fatal(
+			"staged binary validation failed: %v",
+			err,
+		)
 	}
 
 	backupPath := binaryPath + ".backup"
 
 	logf(
-		"starting HiveWorker update to %s; waiting for PID %d to exit",
+		"starting HiveWorker update to %s from PID %d",
 		target,
 		pid,
 	)
 
-	if err := waitForProcessExit(pid, waitForExitTimeout); err != nil {
-		fatal("worker did not exit: %v", err)
+	if err := removeIfExists(
+		backupPath,
+	); err != nil {
+		fatal(
+			"could not remove old backup: %v",
+			err,
+		)
 	}
 
-	logf("HiveWorker stopped; installing staged binary")
+	logf("backing up current HiveWorker binary")
 
-	if err := removeIfExists(backupPath); err != nil {
-		fatal("could not remove old backup: %v", err)
+	if err := copyFile(
+		binaryPath,
+		backupPath,
+		0755,
+	); err != nil {
+		fatal(
+			"could not back up current Worker binary: %v",
+			err,
+		)
 	}
 
-	if err := copyFile(binaryPath, backupPath, 0755); err != nil {
-		fatal("could not back up current worker binary: %v", err)
+	/*
+		Atomically replace the path while the current Worker
+		is still running.
+
+		Linux keeps the old executable inode available to the
+		running process. The next systemd start therefore gets
+		the new binary.
+	*/
+	logf("installing staged HiveWorker binary")
+
+	if err := installBinary(
+		stagedPath,
+		binaryPath,
+	); err != nil {
+		logf(
+			"failed to install new binary: %v",
+			err,
+		)
+
+		if rollbackErr := restoreBinary(
+			backupPath,
+			binaryPath,
+		); rollbackErr != nil {
+			fatal(
+				"installation failed and backup restoration also failed: install=%v restore=%v",
+				err,
+				rollbackErr,
+			)
+		}
+
+		fatal(
+			"installation failed; previous binary restored: %v",
+			err,
+		)
 	}
 
-	if err := installBinary(stagedPath, binaryPath); err != nil {
-		logf("failed to install new binary: %v", err)
+	logf(
+		"new binary installed; terminating old Worker PID %d",
+		pid,
+	)
+
+	if err := terminateProcess(
+		pid,
+		exitTimeout,
+	); err != nil {
+		logf(
+			"old Worker did not terminate cleanly: %v",
+			err,
+		)
 
 		if rollbackErr := rollback(
 			backupPath,
@@ -131,19 +197,32 @@ func main() {
 			healthURL,
 		); rollbackErr != nil {
 			fatal(
-				"installation failed and rollback also failed: install=%v rollback=%v",
+				"Worker termination failed and rollback failed: terminate=%v rollback=%v",
 				err,
 				rollbackErr,
 			)
 		}
 
-		fatal("installation failed; previous version restored: %v", err)
+		fatal(
+			"Worker termination failed; previous version restored",
+		)
 	}
 
-	logf("new binary installed; starting %s", service)
+	logf(
+		"old Worker stopped; waiting for systemd restart",
+	)
 
-	if err := systemctl("start", service); err != nil {
-		logf("new worker failed to start: %v", err)
+	newPID, err := waitForNewMainPID(
+		service,
+		pid,
+		restartTimeout,
+	)
+
+	if err != nil {
+		logf(
+			"new Worker process did not appear: %v",
+			err,
+		)
 
 		if rollbackErr := rollback(
 			backupPath,
@@ -152,19 +231,35 @@ func main() {
 			healthURL,
 		); rollbackErr != nil {
 			fatal(
-				"new worker failed to start and rollback failed: start=%v rollback=%v",
+				"new Worker did not start and rollback failed: start=%v rollback=%v",
 				err,
 				rollbackErr,
 			)
 		}
 
-		fatal("new worker failed to start; previous version restored")
+		fatal(
+			"new Worker did not start; previous version restored",
+		)
 	}
 
-	logf("waiting for HiveWorker health check")
+	logf(
+		"new HiveWorker process started with PID %d",
+		newPID,
+	)
 
-	if err := waitForHealth(healthURL, healthTimeout); err != nil {
-		logf("new worker failed health check: %v", err)
+	logf(
+		"waiting for HiveWorker health check at %s",
+		healthURL,
+	)
+
+	if err := waitForHealth(
+		healthURL,
+		healthTimeout,
+	); err != nil {
+		logf(
+			"new Worker failed health check: %v",
+			err,
+		)
 
 		if rollbackErr := rollback(
 			backupPath,
@@ -179,57 +274,92 @@ func main() {
 			)
 		}
 
-		fatal("new worker failed health check; previous version restored")
+		fatal(
+			"new Worker failed health check; previous version restored",
+		)
 	}
 
-	if err := removeIfExists(backupPath); err != nil {
+	if err := removeIfExists(
+		backupPath,
+	); err != nil {
 		logf(
 			"warning: update succeeded but backup could not be removed: %v",
 			err,
 		)
 	}
 
-	if err := removeIfExists(stagedPath); err != nil {
+	if err := removeIfExists(
+		stagedPath,
+	); err != nil {
 		logf(
 			"warning: update succeeded but staged binary could not be removed: %v",
 			err,
 		)
 	}
 
-	logf("HiveWorker successfully updated to %s", target)
+	logf(
+		"HiveWorker successfully updated to %s",
+		target,
+	)
 }
 
-func validateStagedBinary(path string) error {
+func validateStagedBinary(
+	path string,
+) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
 
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("staged path is not a regular file")
+		return fmt.Errorf(
+			"staged path is not a regular file",
+		)
 	}
 
 	if info.Size() == 0 {
-		return fmt.Errorf("staged binary is empty")
+		return fmt.Errorf(
+			"staged binary is empty",
+		)
 	}
 
-	if err := os.Chmod(path, 0755); err != nil {
-		return fmt.Errorf("chmod staged binary: %w", err)
+	if err := os.Chmod(
+		path,
+		0755,
+	); err != nil {
+		return fmt.Errorf(
+			"chmod staged binary: %w",
+			err,
+		)
 	}
 
-	/*
-		Do not execute the staged Worker here.
-
-		The Worker currently requires its normal runtime/configuration
-		environment and does not expose a reliable --version flag.
-
-		SHA-256 verification should already have been performed by
-		internal/updater before this helper is launched.
-	*/
 	return nil
 }
 
-func waitForProcessExit(pid int, timeout time.Duration) error {
+func terminateProcess(
+	pid int,
+	timeout time.Duration,
+) error {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+
+	if err := process.Signal(
+		syscall.SIGTERM,
+	); err != nil {
+		if err == os.ErrProcessDone {
+			return nil
+		}
+
+		if errno, ok := err.(syscall.Errno); ok &&
+			errno == syscall.ESRCH {
+			return nil
+		}
+
+		return err
+	}
+
 	deadline := time.Now().Add(timeout)
 
 	for {
@@ -244,23 +374,27 @@ func waitForProcessExit(pid int, timeout time.Duration) error {
 
 		if time.Now().After(deadline) {
 			return fmt.Errorf(
-				"process %d still running after %s",
+				"process %d did not exit after %s",
 				pid,
 				timeout,
 			)
 		}
 
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(processInterval)
 	}
 }
 
-func processExists(pid int) (bool, error) {
+func processExists(
+	pid int,
+) (bool, error) {
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false, err
 	}
 
-	err = process.Signal(syscall.Signal(0))
+	err = process.Signal(
+		syscall.Signal(0),
+	)
 
 	if err == nil {
 		return true, nil
@@ -283,7 +417,94 @@ func processExists(pid int) (bool, error) {
 	return false, err
 }
 
-func installBinary(source, destination string) error {
+func waitForNewMainPID(
+	service string,
+	oldPID int,
+	timeout time.Duration,
+) (int, error) {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		pid, err := systemdMainPID(service)
+
+		if err == nil &&
+			pid > 0 &&
+			pid != oldPID {
+			return pid, nil
+		}
+
+		if time.Now().After(deadline) {
+			return 0, fmt.Errorf(
+				"systemd did not start a new %s process within %s",
+				service,
+				timeout,
+			)
+		}
+
+		time.Sleep(processInterval)
+	}
+}
+
+func systemdMainPID(
+	service string,
+) (int, error) {
+	service = strings.TrimSpace(service)
+
+	if service == "" {
+		return 0, fmt.Errorf(
+			"systemd service name is empty",
+		)
+	}
+
+	command := exec.Command(
+		"systemctl",
+		"show",
+		service,
+		"--property=MainPID",
+		"--value",
+	)
+
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf(
+			"systemctl show %s failed: %w: %s",
+			service,
+			err,
+			strings.TrimSpace(
+				string(output),
+			),
+		)
+	}
+
+	value := strings.TrimSpace(
+		string(output),
+	)
+
+	if value == "" || value == "0" {
+		return 0, nil
+	}
+
+	var pid int
+
+	if _, err := fmt.Sscanf(
+		value,
+		"%d",
+		&pid,
+	); err != nil {
+		return 0, fmt.Errorf(
+			"invalid MainPID %q: %w",
+			value,
+			err,
+		)
+	}
+
+	return pid, nil
+}
+
+func installBinary(
+	source string,
+	destination string,
+) error {
 	directory := filepath.Dir(destination)
 
 	tempFile, err := os.CreateTemp(
@@ -291,7 +512,10 @@ func installBinary(source, destination string) error {
 		".hiveworker-update-*",
 	)
 	if err != nil {
-		return fmt.Errorf("create temporary binary: %w", err)
+		return fmt.Errorf(
+			"create temporary binary: %w",
+			err,
+		)
 	}
 
 	tempPath := tempFile.Name()
@@ -307,34 +531,91 @@ func installBinary(source, destination string) error {
 
 	sourceFile, err := os.Open(source)
 	if err != nil {
-		return fmt.Errorf("open staged binary: %w", err)
+		return fmt.Errorf(
+			"open staged binary: %w",
+			err,
+		)
 	}
 	defer sourceFile.Close()
 
-	if _, err := io.Copy(tempFile, sourceFile); err != nil {
-		return fmt.Errorf("copy staged binary: %w", err)
+	if _, err := io.Copy(
+		tempFile,
+		sourceFile,
+	); err != nil {
+		return fmt.Errorf(
+			"copy staged binary: %w",
+			err,
+		)
 	}
 
 	if err := tempFile.Sync(); err != nil {
-		return fmt.Errorf("sync temporary binary: %w", err)
+		return fmt.Errorf(
+			"sync temporary binary: %w",
+			err,
+		)
 	}
 
-	if err := tempFile.Chmod(0755); err != nil {
-		return fmt.Errorf("chmod temporary binary: %w", err)
+	if err := tempFile.Chmod(
+		0755,
+	); err != nil {
+		return fmt.Errorf(
+			"chmod temporary binary: %w",
+			err,
+		)
 	}
 
 	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("close temporary binary: %w", err)
+		return fmt.Errorf(
+			"close temporary binary: %w",
+			err,
+		)
 	}
 
-	if err := os.Rename(tempPath, destination); err != nil {
-		return fmt.Errorf("replace worker binary: %w", err)
+	if err := os.Rename(
+		tempPath,
+		destination,
+	); err != nil {
+		return fmt.Errorf(
+			"replace Worker binary: %w",
+			err,
+		)
 	}
 
 	success = true
 
-	if err := syncDirectory(directory); err != nil {
-		return fmt.Errorf("sync worker directory: %w", err)
+	if err := syncDirectory(
+		directory,
+	); err != nil {
+		return fmt.Errorf(
+			"sync Worker directory: %w",
+			err,
+		)
+	}
+
+	return nil
+}
+
+func restoreBinary(
+	backupPath string,
+	binaryPath string,
+) error {
+	if _, err := os.Stat(
+		backupPath,
+	); err != nil {
+		return fmt.Errorf(
+			"backup binary unavailable: %w",
+			err,
+		)
+	}
+
+	if err := installBinary(
+		backupPath,
+		binaryPath,
+	); err != nil {
+		return fmt.Errorf(
+			"restore backup binary: %w",
+			err,
+		)
 	}
 
 	return nil
@@ -346,46 +627,70 @@ func rollback(
 	service string,
 	healthURL string,
 ) error {
-	logf("rolling back to previous HiveWorker binary")
+	logf(
+		"rolling back to previous HiveWorker binary",
+	)
 
 	/*
-		Ensure a partially started/broken Worker isn't still running before
-		we replace its binary.
+		At this stage the replacement Worker may already be
+		running. Stop it before restoring the old executable.
+
+		This helper may survive the Worker restart because the
+		service itself has not been explicitly stopped during
+		the normal update path.
 	*/
-	_ = systemctl("stop", service)
+	_ = systemctl(
+		"stop",
+		service,
+	)
 
-	if _, err := os.Stat(backupPath); err != nil {
-		return fmt.Errorf("backup binary unavailable: %w", err)
+	if err := restoreBinary(
+		backupPath,
+		binaryPath,
+	); err != nil {
+		return err
 	}
 
-	if err := installBinary(backupPath, binaryPath); err != nil {
-		return fmt.Errorf("restore backup binary: %w", err)
-	}
-
-	if err := systemctl("start", service); err != nil {
-		return fmt.Errorf("restart previous worker: %w", err)
-	}
-
-	if err := waitForHealth(healthURL, healthTimeout); err != nil {
+	if err := systemctl(
+		"start",
+		service,
+	); err != nil {
 		return fmt.Errorf(
-			"previous worker did not become healthy: %w",
+			"restart previous Worker: %w",
 			err,
 		)
 	}
 
-	if err := removeIfExists(backupPath); err != nil {
+	if err := waitForHealth(
+		healthURL,
+		healthTimeout,
+	); err != nil {
+		return fmt.Errorf(
+			"previous Worker did not become healthy: %w",
+			err,
+		)
+	}
+
+	if err := removeIfExists(
+		backupPath,
+	); err != nil {
 		logf(
 			"warning: rollback succeeded but backup could not be removed: %v",
 			err,
 		)
 	}
 
-	logf("rollback completed successfully")
+	logf(
+		"rollback completed successfully",
+	)
 
 	return nil
 }
 
-func waitForHealth(url string, timeout time.Duration) error {
+func waitForHealth(
+	url string,
+	timeout time.Duration,
+) error {
 	client := &http.Client{
 		Timeout: 3 * time.Second,
 	}
@@ -405,7 +710,11 @@ func waitForHealth(url string, timeout time.Duration) error {
 		response, err := client.Do(request)
 
 		if err == nil {
-			_, _ = io.Copy(io.Discard, response.Body)
+			_, _ = io.Copy(
+				io.Discard,
+				response.Body,
+			)
+
 			_ = response.Body.Close()
 
 			if response.StatusCode >= 200 &&
@@ -426,25 +735,34 @@ func waitForHealth(url string, timeout time.Duration) error {
 	}
 }
 
-func systemctl(action, service string) error {
-	if strings.TrimSpace(service) == "" {
-		return fmt.Errorf("systemd service name is empty")
+func systemctl(
+	action string,
+	service string,
+) error {
+	service = strings.TrimSpace(service)
+
+	if service == "" {
+		return fmt.Errorf(
+			"systemd service name is empty",
+		)
 	}
 
-	cmd := exec.Command(
+	command := exec.Command(
 		"systemctl",
 		action,
 		service,
 	)
 
-	output, err := cmd.CombinedOutput()
+	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(
 			"systemctl %s %s failed: %w: %s",
 			action,
 			service,
 			err,
-			strings.TrimSpace(string(output)),
+			strings.TrimSpace(
+				string(output),
+			),
 		)
 	}
 
@@ -476,7 +794,9 @@ func copyFile(
 
 	destinationFile, err := os.OpenFile(
 		destination,
-		os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
+		os.O_WRONLY|
+			os.O_CREATE|
+			os.O_TRUNC,
 		mode,
 	)
 	if err != nil {
@@ -508,7 +828,10 @@ func copyFile(
 		return err
 	}
 
-	if err := os.Chmod(destination, mode); err != nil {
+	if err := os.Chmod(
+		destination,
+		mode,
+	); err != nil {
 		return err
 	}
 
@@ -517,17 +840,22 @@ func copyFile(
 	return nil
 }
 
-func removeIfExists(path string) error {
+func removeIfExists(
+	path string,
+) error {
 	err := os.Remove(path)
 
-	if err == nil || os.IsNotExist(err) {
+	if err == nil ||
+		os.IsNotExist(err) {
 		return nil
 	}
 
 	return err
 }
 
-func syncDirectory(path string) error {
+func syncDirectory(
+	path string,
+) error {
 	directory, err := os.Open(path)
 	if err != nil {
 		return err
@@ -537,18 +865,33 @@ func syncDirectory(path string) error {
 	return directory.Sync()
 }
 
-func logf(format string, args ...any) {
-	message := fmt.Sprintf(format, args...)
+func logf(
+	format string,
+	args ...any,
+) {
+	message := fmt.Sprintf(
+		format,
+		args...,
+	)
 
 	fmt.Fprintf(
 		os.Stderr,
 		"[hiveworker-updater] %s %s\n",
-		time.Now().UTC().Format(time.RFC3339),
+		time.Now().
+			UTC().
+			Format(time.RFC3339),
 		message,
 	)
 }
 
-func fatal(format string, args ...any) {
-	logf("ERROR: "+format, args...)
+func fatal(
+	format string,
+	args ...any,
+) {
+	logf(
+		"ERROR: "+format,
+		args...,
+	)
+
 	os.Exit(1)
 }

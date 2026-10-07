@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,16 +50,18 @@ type githubRelease struct {
 }
 
 type Manager struct {
-	mu     sync.RWMutex
-	status Status
-	client *http.Client
+	mu        sync.RWMutex
+	status    Status
+	client    *http.Client
+	healthURL string
 }
 
-func NewManager() *Manager {
+func NewManager(workerListen string) *Manager {
 	return &Manager{
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+		healthURL: healthURLFromListen(workerListen),
 		status: Status{
 			State:          "idle",
 			CurrentVersion: workerversion.Version,
@@ -113,9 +116,16 @@ func (m *Manager) Start(version string) error {
 	m.mu.Lock()
 
 	switch m.status.State {
-	case "queued", "checking", "downloading", "verifying", "staging", "restarting":
+	case "queued",
+		"checking",
+		"downloading",
+		"verifying",
+		"staging",
+		"restarting":
 		m.mu.Unlock()
-		return errors.New("a Worker update is already running")
+		return errors.New(
+			"a Worker update is already running",
+		)
 	}
 
 	startedAt := time.Now().UTC()
@@ -136,7 +146,10 @@ func (m *Manager) Start(version string) error {
 	return nil
 }
 
-func (m *Manager) run(version string, startedAt time.Time) {
+func (m *Manager) run(
+	version string,
+	startedAt time.Time,
+) {
 	fail := func(message string, err error) {
 		m.setStatus(
 			"failed",
@@ -157,11 +170,17 @@ func (m *Manager) run(version string, startedAt time.Time) {
 
 	releaseVersion, err := m.resolveRelease(version)
 	if err != nil {
-		fail("Unable to resolve Worker release.", err)
+		fail(
+			"Unable to resolve Worker release.",
+			err,
+		)
 		return
 	}
 
-	if sameVersion(workerversion.Version, releaseVersion) {
+	if sameVersion(
+		workerversion.Version,
+		releaseVersion,
+	) {
 		m.setStatus(
 			"complete",
 			releaseVersion,
@@ -174,18 +193,32 @@ func (m *Manager) run(version string, startedAt time.Time) {
 
 	assetName, err := releaseAssetName()
 	if err != nil {
-		fail("Unable to determine Worker architecture.", err)
+		fail(
+			"Unable to determine Worker architecture.",
+			err,
+		)
 		return
 	}
 
-	if err := os.MkdirAll(updateDir, 0755); err != nil {
-		fail("Unable to prepare Worker update directory.", err)
+	if err := os.MkdirAll(
+		updateDir,
+		0755,
+	); err != nil {
+		fail(
+			"Unable to prepare Worker update directory.",
+			err,
+		)
 		return
 	}
 
 	stagedBinary := filepath.Join(
 		updateDir,
-		"hiveworker-"+strings.TrimPrefix(releaseVersion, "v")+".new",
+		"hiveworker-"+
+			strings.TrimPrefix(
+				releaseVersion,
+				"v",
+			)+
+			".new",
 	)
 
 	m.setStatus(
@@ -201,17 +234,35 @@ func (m *Manager) run(version string, startedAt time.Time) {
 		assetName,
 		stagedBinary,
 	); err != nil {
-		fail("Worker binary download failed.", err)
+		fail(
+			"Worker binary download failed.",
+			err,
+		)
 		return
 	}
 
+	/*
+		Do not remove stagedBinary after the updater helper has
+		successfully started.
+
+		The helper owns the staged file from that point onward.
+	*/
+	helperStarted := false
+
 	defer func() {
-		_ = os.Remove(stagedBinary)
+		if !helperStarted {
+			_ = os.Remove(stagedBinary)
+		}
 	}()
 
 	checksumsPath := filepath.Join(
 		updateDir,
-		"checksums-"+strings.TrimPrefix(releaseVersion, "v")+".txt",
+		"checksums-"+
+			strings.TrimPrefix(
+				releaseVersion,
+				"v",
+			)+
+			".txt",
 	)
 
 	if err := m.downloadReleaseAsset(
@@ -219,7 +270,10 @@ func (m *Manager) run(version string, startedAt time.Time) {
 		"checksums.txt",
 		checksumsPath,
 	); err != nil {
-		fail("Worker checksum download failed.", err)
+		fail(
+			"Worker checksum download failed.",
+			err,
+		)
 		return
 	}
 
@@ -240,17 +294,28 @@ func (m *Manager) run(version string, startedAt time.Time) {
 		assetName,
 	)
 	if err != nil {
-		fail("Unable to read Worker checksum.", err)
+		fail(
+			"Unable to read Worker checksum.",
+			err,
+		)
 		return
 	}
 
-	actualChecksum, err := calculateSHA256(stagedBinary)
+	actualChecksum, err := calculateSHA256(
+		stagedBinary,
+	)
 	if err != nil {
-		fail("Unable to calculate Worker checksum.", err)
+		fail(
+			"Unable to calculate Worker checksum.",
+			err,
+		)
 		return
 	}
 
-	if !strings.EqualFold(expectedChecksum, actualChecksum) {
+	if !strings.EqualFold(
+		expectedChecksum,
+		actualChecksum,
+	) {
 		fail(
 			"Worker release checksum verification failed.",
 			fmt.Errorf(
@@ -261,13 +326,25 @@ func (m *Manager) run(version string, startedAt time.Time) {
 		return
 	}
 
-	if err := os.Chmod(stagedBinary, 0755); err != nil {
-		fail("Unable to mark Worker release executable.", err)
+	if err := os.Chmod(
+		stagedBinary,
+		0755,
+	); err != nil {
+		fail(
+			"Unable to mark Worker release executable.",
+			err,
+		)
 		return
 	}
 
-	if err := verifyBinary(stagedBinary, releaseVersion); err != nil {
-		fail("Worker release validation failed.", err)
+	if err := verifyBinary(
+		stagedBinary,
+		releaseVersion,
+	); err != nil {
+		fail(
+			"Worker release validation failed.",
+			err,
+		)
 		return
 	}
 
@@ -294,10 +371,16 @@ func (m *Manager) run(version string, startedAt time.Time) {
 	if err := launchUpdaterHelper(
 		stagedBinary,
 		releaseVersion,
+		m.healthURL,
 	); err != nil {
-		fail("Unable to launch Worker updater.", err)
+		fail(
+			"Unable to launch Worker updater.",
+			err,
+		)
 		return
 	}
+
+	helperStarted = true
 
 	m.setStatus(
 		"restarting",
@@ -308,7 +391,9 @@ func (m *Manager) run(version string, startedAt time.Time) {
 	)
 }
 
-func (m *Manager) resolveRelease(version string) (string, error) {
+func (m *Manager) resolveRelease(
+	version string,
+) (string, error) {
 	if version != "latest" {
 		return ensureVPrefix(version), nil
 	}
@@ -327,8 +412,14 @@ func (m *Manager) resolveRelease(version string) (string, error) {
 		return "", err
 	}
 
-	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "HivePanel-Worker")
+	request.Header.Set(
+		"Accept",
+		"application/vnd.github+json",
+	)
+	request.Header.Set(
+		"User-Agent",
+		"HivePanel-Worker",
+	)
 
 	response, err := m.client.Do(request)
 	if err != nil {
@@ -345,21 +436,31 @@ func (m *Manager) resolveRelease(version string) (string, error) {
 
 	var release githubRelease
 
-	if err := json.NewDecoder(response.Body).Decode(&release); err != nil {
+	if err := json.NewDecoder(
+		response.Body,
+	).Decode(&release); err != nil {
 		return "", err
 	}
 
-	release.TagName = strings.TrimSpace(release.TagName)
+	release.TagName = strings.TrimSpace(
+		release.TagName,
+	)
 
 	if release.TagName == "" {
-		return "", errors.New("latest release has no tag")
+		return "", errors.New(
+			"latest release has no tag",
+		)
 	}
 
 	if !validVersion(release.TagName) {
-		return "", errors.New("latest release tag is invalid")
+		return "", errors.New(
+			"latest release tag is invalid",
+		)
 	}
 
-	return ensureVPrefix(release.TagName), nil
+	return ensureVPrefix(
+		release.TagName,
+	), nil
 }
 
 func (m *Manager) downloadReleaseAsset(
@@ -393,7 +494,10 @@ func (m *Manager) downloadReleaseAsset(
 		return err
 	}
 
-	request.Header.Set("User-Agent", "HivePanel-Worker")
+	request.Header.Set(
+		"User-Agent",
+		"HivePanel-Worker",
+	)
 
 	response, err := m.client.Do(request)
 	if err != nil {
@@ -414,14 +518,20 @@ func (m *Manager) downloadReleaseAsset(
 
 	file, err := os.OpenFile(
 		tempPath,
-		os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
+		os.O_CREATE|
+			os.O_WRONLY|
+			os.O_TRUNC,
 		0755,
 	)
 	if err != nil {
 		return err
 	}
 
-	_, copyErr := io.Copy(file, response.Body)
+	_, copyErr := io.Copy(
+		file,
+		response.Body,
+	)
+
 	closeErr := file.Close()
 
 	if copyErr != nil {
@@ -434,7 +544,10 @@ func (m *Manager) downloadReleaseAsset(
 		return closeErr
 	}
 
-	if err := os.Rename(tempPath, destination); err != nil {
+	if err := os.Rename(
+		tempPath,
+		destination,
+	); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
@@ -478,14 +591,18 @@ func checksumForAsset(
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
+		fields := strings.Fields(
+			scanner.Text(),
+		)
 
 		if len(fields) < 2 {
 			continue
 		}
 
 		filename := strings.TrimPrefix(
-			strings.TrimSpace(fields[len(fields)-1]),
+			strings.TrimSpace(
+				fields[len(fields)-1],
+			),
 			"*",
 		)
 
@@ -493,7 +610,9 @@ func checksumForAsset(
 			continue
 		}
 
-		checksum := strings.TrimSpace(fields[0])
+		checksum := strings.TrimSpace(
+			fields[0],
+		)
 
 		if len(checksum) != 64 {
 			return "", errors.New(
@@ -501,13 +620,17 @@ func checksumForAsset(
 			)
 		}
 
-		if _, err := hex.DecodeString(checksum); err != nil {
+		if _, err := hex.DecodeString(
+			checksum,
+		); err != nil {
 			return "", errors.New(
 				"invalid SHA-256 checksum in manifest",
 			)
 		}
 
-		return strings.ToLower(checksum), nil
+		return strings.ToLower(
+			checksum,
+		), nil
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -520,7 +643,9 @@ func checksumForAsset(
 	)
 }
 
-func calculateSHA256(path string) (string, error) {
+func calculateSHA256(
+	path string,
+) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -529,14 +654,22 @@ func calculateSHA256(path string) (string, error) {
 
 	hasher := sha256.New()
 
-	if _, err := io.Copy(hasher, file); err != nil {
+	if _, err := io.Copy(
+		hasher,
+		file,
+	); err != nil {
 		return "", err
 	}
 
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	return hex.EncodeToString(
+		hasher.Sum(nil),
+	), nil
 }
 
-func verifyBinary(path string, expectedVersion string) error {
+func verifyBinary(
+	path string,
+	expectedVersion string,
+) error {
 	ctx, cancel := context.WithTimeout(
 		context.Background(),
 		10*time.Second,
@@ -552,7 +685,9 @@ func verifyBinary(path string, expectedVersion string) error {
 	output, err := command.CombinedOutput()
 
 	if err == nil {
-		value := strings.TrimSpace(string(output))
+		value := strings.TrimSpace(
+			string(output),
+		)
 
 		if value == "" {
 			return nil
@@ -561,20 +696,28 @@ func verifyBinary(path string, expectedVersion string) error {
 		if strings.Contains(
 			strings.ToLower(value),
 			strings.ToLower(
-				strings.TrimPrefix(expectedVersion, "v"),
+				strings.TrimPrefix(
+					expectedVersion,
+					"v",
+				),
 			),
 		) {
 			return nil
 		}
 
-		// Don't fail here solely because the CLI output format
-		// differs. Successful execution still proves the binary
-		// can be started on this machine.
+		/*
+			Successful execution is sufficient here even if
+			the CLI output format differs.
+		*/
 		return nil
 	}
 
-	// The current daemon may not expose --version yet.
-	// Try --help as a basic executable/architecture check.
+	/*
+		Older Worker builds may not expose --version.
+
+		Fall back to --help as a basic executable and
+		architecture check.
+	*/
 	helpCtx, helpCancel := context.WithTimeout(
 		context.Background(),
 		10*time.Second,
@@ -600,68 +743,163 @@ func verifyBinary(path string, expectedVersion string) error {
 func launchUpdaterHelper(
 	stagedBinary string,
 	targetVersion string,
+	healthURL string,
 ) error {
+	healthURL = strings.TrimSpace(
+		healthURL,
+	)
+
+	if healthURL == "" {
+		return errors.New(
+			"Worker health URL is unavailable",
+		)
+	}
+
+	unitName := fmt.Sprintf(
+		"hiveworker-update-%d",
+		os.Getpid(),
+	)
+
 	command := exec.Command(
+		"systemd-run",
+		"--unit",
+		unitName,
+		"--collect",
+		"--property=Type=exec",
 		helperPath,
 		"--pid",
-		fmt.Sprintf("%d", os.Getpid()),
+		fmt.Sprintf(
+			"%d",
+			os.Getpid(),
+		),
 		"--staged",
 		stagedBinary,
 		"--target",
 		targetVersion,
+		"--health-url",
+		healthURL,
 	)
 
-	command.Stdin = nil
-	command.Stdout = nil
-	command.Stderr = nil
-
-	if err := command.Start(); err != nil {
-		return err
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf(
+			"unable to start updater transient service: %w: %s",
+			err,
+			strings.TrimSpace(
+				string(output),
+			),
+		)
 	}
-
-	/*
-		The updater helper is now running independently.
-
-		Give it enough time to initialise and begin waiting for
-		this Worker process to terminate.
-	*/
-	time.Sleep(500 * time.Millisecond)
-
-	go func() {
-		time.Sleep(1 * time.Second)
-		os.Exit(0)
-	}()
 
 	return nil
 }
 
-func normalizeVersion(version string) string {
+func healthURLFromListen(
+	listen string,
+) string {
+	listen = strings.TrimSpace(listen)
+
+	if listen == "" {
+		return ""
+	}
+
+	host, port, err := net.SplitHostPort(
+		listen,
+	)
+
+	if err != nil {
+		/*
+			Common shorthand such as ":4040".
+		*/
+		if strings.HasPrefix(
+			listen,
+			":",
+		) {
+			port = strings.TrimPrefix(
+				listen,
+				":",
+			)
+
+			if port == "" {
+				return ""
+			}
+
+			return "http://127.0.0.1:" +
+				port +
+				"/health"
+		}
+
+		return ""
+	}
+
+	host = strings.TrimSpace(host)
+	port = strings.TrimSpace(port)
+
+	if port == "" {
+		return ""
+	}
+
+	switch host {
+	case "",
+		"0.0.0.0",
+		"::",
+		"[::]":
+		host = "127.0.0.1"
+	}
+
+	return "http://" +
+		net.JoinHostPort(
+			host,
+			port,
+		) +
+		"/health"
+}
+
+func normalizeVersion(
+	version string,
+) string {
 	version = strings.TrimSpace(version)
 
-	if strings.EqualFold(version, "latest") {
+	if strings.EqualFold(
+		version,
+		"latest",
+	) {
 		return "latest"
 	}
 
 	return ensureVPrefix(version)
 }
 
-func ensureVPrefix(version string) string {
+func ensureVPrefix(
+	version string,
+) string {
 	version = strings.TrimSpace(version)
 
 	if version == "" {
 		return ""
 	}
 
-	if strings.HasPrefix(version, "v") ||
-		strings.HasPrefix(version, "V") {
+	if strings.HasPrefix(
+		version,
+		"v",
+	) ||
+		strings.HasPrefix(
+			version,
+			"V",
+		) {
 		return "v" + version[1:]
 	}
 
 	return "v" + version
 }
 
-func validVersion(version string) bool {
-	if strings.EqualFold(version, "latest") {
+func validVersion(
+	version string,
+) bool {
+	if strings.EqualFold(
+		version,
+		"latest",
+	) {
 		return true
 	}
 
@@ -673,7 +911,10 @@ func validVersion(version string) bool {
 		"V",
 	)
 
-	parts := strings.Split(version, ".")
+	parts := strings.Split(
+		version,
+		".",
+	)
 
 	if len(parts) != 3 {
 		return false
@@ -685,7 +926,8 @@ func validVersion(version string) bool {
 		}
 
 		for _, character := range part {
-			if character < '0' || character > '9' {
+			if character < '0' ||
+				character > '9' {
 				return false
 			}
 		}
@@ -694,8 +936,13 @@ func validVersion(version string) bool {
 	return true
 }
 
-func sameVersion(a string, b string) bool {
-	normalize := func(value string) string {
+func sameVersion(
+	a string,
+	b string,
+) bool {
+	normalize := func(
+		value string,
+	) string {
 		return strings.TrimPrefix(
 			strings.TrimPrefix(
 				strings.TrimSpace(value),
