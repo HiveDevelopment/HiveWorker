@@ -141,7 +141,19 @@ func (m *Manager) Start(version string) error {
 
 	m.mu.Unlock()
 
-	go m.run(version, startedAt)
+	/*
+		The update runs asynchronously, but give the HTTP handler enough
+		time to return its 202 Accepted response before any update work can
+		reach the restart stage.
+
+		This prevents a successful update from appearing to the Panel as
+		"Empty reply from server" when the Worker restarts extremely
+		quickly.
+	*/
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		m.run(version, startedAt)
+	}()
 
 	return nil
 }
