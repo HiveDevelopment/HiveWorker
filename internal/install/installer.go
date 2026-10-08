@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"hivepanel-worker/internal/comb"
 	"hivepanel-worker/internal/files"
@@ -753,8 +754,6 @@ func stepSteamCMD(ctx *Context, step comb.InstallStep) (any, error) {
 		return nil, errors.New("steamcmd app_id is required")
 	}
 
-	// Combs use /home/container for the Cell root inside the game container.
-	// Resolve this against the host Cell directory instead.
 	if target == "" || target == "." || target == "/home/container" {
 		target = "."
 	} else if strings.HasPrefix(target, "/home/container/") {
@@ -777,6 +776,49 @@ func stepSteamCMD(ctx *Context, step comb.InstallStep) (any, error) {
 		return nil, err
 	}
 
+	const containerInstallDir = "/home/container/server"
+	const steamCMDPath = "/home/container/steamcmd/steamcmd.sh"
+
+	// Resolve the effective user from the actual installation image rather than
+	// assuming that all SteamCMD images run as UID 1000.
+	identityCmd := exec.Command("docker", "run", "--rm", "--entrypoint", "/bin/sh", image, "-c", "id -u; id -g")
+	identityOutput, err := identityCmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("could not determine SteamCMD image user: %w: %s", err, strings.TrimSpace(string(identityOutput)))
+	}
+	identity := strings.Fields(string(identityOutput))
+	if len(identity) != 2 {
+		return nil, fmt.Errorf("unexpected SteamCMD image user information: %q", strings.TrimSpace(string(identityOutput)))
+	}
+	uid, uidErr := strconv.Atoi(identity[0])
+	gid, gidErr := strconv.Atoi(identity[1])
+	if uidErr != nil || gidErr != nil || uid < 0 || gid < 0 {
+		return nil, fmt.Errorf("invalid SteamCMD image user information: %q", strings.TrimSpace(string(identityOutput)))
+	}
+
+	// The worker may recreate the Cell directory on every retry. Set ownership
+	// after it exists, immediately before the installation container starts.
+	// Only change the mount root, not the entire game directory tree.
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		return nil, err
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && (int(stat.Uid) != uid || int(stat.Gid) != gid) {
+		if err := os.Chown(targetPath, uid, gid); err != nil {
+			return nil, fmt.Errorf("cannot set SteamCMD install directory owner to %d:%d: %w", uid, gid, err)
+		}
+	}
+
+	// :Z provides the correct SELinux label on Rocky/RHEL hosts. The preflight
+	// prevents a multi-gigabyte download when the bind mount is not writable.
+	mount := targetPath + ":" + containerInstallDir + ":Z"
+	checkCmd := exec.Command("docker", "run", "--rm", "-v", mount, "--entrypoint", "/bin/sh", image,
+		"-c", "test -w /home/container/server && touch /home/container/server/.hivepanel-steamcmd-write-test && rm /home/container/server/.hivepanel-steamcmd-write-test")
+	checkOutput, err := checkCmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("SteamCMD cannot write to Cell directory %s (image user %d:%d): %w: %s", targetPath, uid, gid, err, strings.TrimSpace(string(checkOutput)))
+	}
+
 	login := []string{"+login", "anonymous"}
 	if username != "" {
 		login = []string{"+login", username}
@@ -784,10 +826,6 @@ func stepSteamCMD(ctx *Context, step comb.InstallStep) (any, error) {
 			login = append(login, password)
 		}
 	}
-
-	// Mount away from SteamCMD itself so the bind mount cannot hide its files.
-	const containerInstallDir = "/home/container/server"
-	const steamCMDPath = "/home/container/steamcmd/steamcmd.sh"
 
 	steamArgs := []string{"+force_install_dir", containerInstallDir}
 	steamArgs = append(steamArgs, login...)
@@ -800,21 +838,20 @@ func stepSteamCMD(ctx *Context, step comb.InstallStep) (any, error) {
 	}
 	steamArgs = append(steamArgs, "+quit")
 
-	args := []string{"run", "--rm", "--mount", "type=bind,source=" + targetPath + ",target=" + containerInstallDir, image, steamCMDPath}
+	args := []string{"run", "--rm", "-v", mount, image, steamCMDPath}
 	args = append(args, steamArgs...)
 
-	ctx.Log("Installing Steam application " + appID + " with SteamCMD")
+	ctx.Log(fmt.Sprintf("Installing Steam application %s with SteamCMD (UID %d, GID %d)", appID, uid, gid))
 	cmd := exec.Command("docker", args...)
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
 		ctx.Log(strings.TrimSpace(string(output)))
 	}
 	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if message != "" {
-			return nil, fmt.Errorf("steamcmd failed: %w: %s", err, message)
-		}
-		return nil, fmt.Errorf("steamcmd failed: %w", err)
+		return nil, fmt.Errorf("steamcmd failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if !strings.Contains(string(output), "Success! App '"+appID+"' fully installed.") {
+		return nil, fmt.Errorf("steamcmd did not confirm successful installation of app %s; review SteamCMD output", appID)
 	}
 
 	entries, err := os.ReadDir(targetPath)
@@ -822,7 +859,7 @@ func stepSteamCMD(ctx *Context, step comb.InstallStep) (any, error) {
 		return nil, fmt.Errorf("steamcmd could not inspect installation directory: %w", err)
 	}
 	if len(entries) == 0 {
-		return nil, fmt.Errorf("steamcmd exited successfully but installed no files into %s", targetPath)
+		return nil, fmt.Errorf("steamcmd reported success but installed no files into %s", targetPath)
 	}
 
 	return map[string]any{
