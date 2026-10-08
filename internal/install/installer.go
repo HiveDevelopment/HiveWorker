@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"hivepanel-worker/internal/comb"
 	"hivepanel-worker/internal/files"
@@ -799,11 +798,12 @@ func stepSteamCMD(ctx *Context, step comb.InstallStep) (any, error) {
 	// The worker may recreate the Cell directory on every retry. Set ownership
 	// after it exists, immediately before the installation container starts.
 	// Only change the mount root, not the entire game directory tree.
-	info, err := os.Stat(targetPath)
+	ownerUID, ownerGID, err := fileOwner(targetPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot determine SteamCMD install directory owner: %w", err)
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && (int(stat.Uid) != uid || int(stat.Gid) != gid) {
+
+	if ownerUID != uid || ownerGID != gid {
 		if err := os.Chown(targetPath, uid, gid); err != nil {
 			return nil, fmt.Errorf("cannot set SteamCMD install directory owner to %d:%d: %w", uid, gid, err)
 		}
