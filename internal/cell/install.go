@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"hivepanel-worker/internal/comb"
+	"hivepanel-worker/internal/identity"
 	"hivepanel-worker/internal/install"
 )
 
@@ -72,6 +73,14 @@ func (m *Manager) runInstall(id, dir string, variables map[string]string, steps 
 			m.mutex.Unlock()
 		},
 	)
+
+	// Installer steps run on the host and may create root-owned files.
+	// Repair ownership even if an install step failed.
+	if ownershipErr := identity.Prepare(dir); ownershipErr != nil {
+		if err == nil {
+			err = fmt.Errorf("prepare installed files: %w", ownershipErr)
+		}
+	}
 
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -153,10 +162,7 @@ func (m *Manager) Reinstall(id string) error {
 		)
 	}
 
-	if err := os.MkdirAll(
-		dir,
-		0750,
-	); err != nil {
+	if err := identity.Prepare(dir); err != nil {
 		return fmt.Errorf(
 			"recreate cell directory: %w",
 			err,

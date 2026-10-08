@@ -3,9 +3,9 @@ package cell
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
+	"hivepanel-worker/internal/identity"
 	hiveruntime "hivepanel-worker/internal/runtime"
 )
 
@@ -61,7 +61,9 @@ func (m *Manager) Start(id string) error {
 		environment[key] = renderTemplate(value, variables)
 	}
 
-	_ = os.MkdirAll(cellCopy.Dir, 0755)
+	if err := identity.Prepare(cellCopy.Dir); err != nil {
+		return fmt.Errorf("prepare cell files: %w", err)
+	}
 
 	m.broadcastByID(id, "Cell started.")
 

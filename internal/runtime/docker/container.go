@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/go-connections/nat"
+	"hivepanel-worker/internal/identity"
 
 	hiveruntime "hivepanel-worker/internal/runtime"
 
@@ -39,6 +39,11 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 		return err
 	}
 
+	managedUser, _, _, err := identity.Ensure()
+	if err != nil {
+		return fmt.Errorf("resolve container identity: %w", err)
+	}
+
 	instanceAbs, err := filepath.Abs(cell.InstanceDir)
 	if err != nil {
 		return err
@@ -59,6 +64,7 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 		ctx,
 		&container.Config{
 			Image:        cell.Image,
+			User:         managedUser,
 			WorkingDir:   cell.WorkingDir,
 			Cmd:          shellCommand(cell.Command),
 			Env:          env,
@@ -76,13 +82,7 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 			},
 		},
 		&container.HostConfig{
-			Mounts: []mount.Mount{
-				{
-					Type:   mount.TypeBind,
-					Source: instanceAbs,
-					Target: cell.WorkingDir,
-				},
-			},
+			Binds: []string{instanceAbs + ":" + cell.WorkingDir + ":Z"},
 			PortBindings: nat.PortMap{
 				port: []nat.PortBinding{
 					{

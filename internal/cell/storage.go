@@ -14,6 +14,7 @@ import (
 
 	"hivepanel-worker/internal/allocation"
 	"hivepanel-worker/internal/comb"
+	"hivepanel-worker/internal/identity"
 )
 
 func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
@@ -115,7 +116,7 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		subscribers: map[chan ConsoleEntry]bool{},
 	}
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := identity.Prepare(dir); err != nil {
 		m.releaseCellAllocations(gameCell)
 		return nil, err
 	}
