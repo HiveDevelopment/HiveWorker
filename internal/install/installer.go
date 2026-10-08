@@ -736,225 +736,93 @@ func stepGit(
 	}, err
 }
 
-func stepSteamCMD(
-	ctx *Context,
-	step comb.InstallStep,
-) (any, error) {
-	appID := render(
-		ctx,
-		getString(step.With, "app_id"),
-	)
+func stepSteamCMD(ctx *Context, step comb.InstallStep) (any, error) {
+	appID := render(ctx, getString(step.With, "app_id"))
+	target := render(ctx, getString(step.With, "directory"))
+	if target == "" {
+		target = render(ctx, getString(step.With, "install_dir"))
+	}
 
-	target := render(
-		ctx,
-		getString(step.With, "directory"),
-	)
-
-	beta := render(
-		ctx,
-		getString(step.With, "beta"),
-	)
-
-	username := render(
-		ctx,
-		getString(step.With, "username"),
-	)
-
-	password := render(
-		ctx,
-		getString(step.With, "password"),
-	)
-
-	validate := getBool(
-		step.With,
-		"validate",
-		true,
-	)
-
-	image := render(
-		ctx,
-		getString(step.With, "image"),
-	)
+	beta := render(ctx, getString(step.With, "beta"))
+	username := render(ctx, getString(step.With, "username"))
+	password := render(ctx, getString(step.With, "password"))
+	validate := getBool(step.With, "validate", true)
+	image := render(ctx, getString(step.With, "image"))
 
 	if appID == "" {
-		return nil, errors.New(
-			"steamcmd app_id is required",
-		)
+		return nil, errors.New("steamcmd app_id is required")
 	}
 
-	if target == "" ||
-		target == "." ||
-		target == "/home/container" {
+	// Combs use /home/container for the Cell root inside the game container.
+	// Resolve this against the host Cell directory instead.
+	if target == "" || target == "." || target == "/home/container" {
 		target = "."
+	} else if strings.HasPrefix(target, "/home/container/") {
+		target = strings.TrimPrefix(target, "/home/container/")
 	}
 
-	/*
-		HivePanel's own SteamCMD image is the default.
-
-		Combs can still override this using the
-		"image" property on the steamcmd install step.
-	*/
 	if image == "" {
-		image =
-			"ghcr.io/hivedevelopment/hivepanel-steamcmd:latest"
+		image = "ghcr.io/hivedevelopment/hivepanel-steamcmd:latest"
 	}
 
 	if _, err := exec.LookPath("docker"); err != nil {
-		return nil, errors.New(
-			"docker is required for steamcmd installation",
-		)
+		return nil, errors.New("docker is required for steamcmd installation")
 	}
 
-	targetPath, err := files.SafePath(
-		ctx.InstanceDir,
-		target,
-	)
+	targetPath, err := files.SafePath(ctx.InstanceDir, target)
 	if err != nil {
 		return nil, err
 	}
-
-	if err := os.MkdirAll(
-		targetPath,
-		0755,
-	); err != nil {
+	if err := os.MkdirAll(targetPath, 0755); err != nil {
 		return nil, err
 	}
 
-	login := []string{
-		"+login",
-		"anonymous",
-	}
-
+	login := []string{"+login", "anonymous"}
 	if username != "" {
-		login = []string{
-			"+login",
-			username,
-		}
-
+		login = []string{"+login", username}
 		if password != "" {
-			login = append(
-				login,
-				password,
-			)
+			login = append(login, password)
 		}
 	}
 
-	/*
-		The host Cell directory is mounted at
-		/home/container/server.
-
-		SteamCMD itself lives separately at:
-		/home/container/steamcmd/steamcmd.sh
-
-		This prevents the Cell mount from hiding
-		the SteamCMD installation inside the image.
-	*/
+	// Mount away from SteamCMD itself so the bind mount cannot hide its files.
 	const containerInstallDir = "/home/container/server"
-
 	const steamCMDPath = "/home/container/steamcmd/steamcmd.sh"
 
-	steamArgs := []string{
-		"+force_install_dir",
-		containerInstallDir,
-	}
-
-	steamArgs = append(
-		steamArgs,
-		login...,
-	)
-
+	steamArgs := []string{"+force_install_dir", containerInstallDir}
+	steamArgs = append(steamArgs, login...)
+	steamArgs = append(steamArgs, "+app_update", appID)
 	if beta != "" {
-		steamArgs = append(
-			steamArgs,
-			"+app_update",
-			appID,
-			"-beta",
-			beta,
-		)
-	} else {
-		steamArgs = append(
-			steamArgs,
-			"+app_update",
-			appID,
-		)
+		steamArgs = append(steamArgs, "-beta", beta)
 	}
-
 	if validate {
-		steamArgs = append(
-			steamArgs,
-			"validate",
-		)
+		steamArgs = append(steamArgs, "validate")
 	}
+	steamArgs = append(steamArgs, "+quit")
 
-	steamArgs = append(
-		steamArgs,
-		"+quit",
-	)
+	args := []string{"run", "--rm", "--mount", "type=bind,source=" + targetPath + ",target=" + containerInstallDir, image, steamCMDPath}
+	args = append(args, steamArgs...)
 
-	args := []string{
-		"run",
-		"--rm",
-
-		"-v",
-		targetPath +
-			":" +
-			containerInstallDir,
-
-		image,
-
-		steamCMDPath,
-	}
-
-	args = append(
-		args,
-		steamArgs...,
-	)
-
-	ctx.Log(
-		"Installing Steam application " +
-			appID +
-			" with SteamCMD",
-	)
-
-	cmd := exec.Command(
-		"docker",
-		args...,
-	)
-
+	ctx.Log("Installing Steam application " + appID + " with SteamCMD")
+	cmd := exec.Command("docker", args...)
 	output, err := cmd.CombinedOutput()
-
 	if len(output) > 0 {
-		ctx.Log(
-			strings.TrimSpace(
-				string(output),
-			),
-		)
+		ctx.Log(strings.TrimSpace(string(output)))
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message != "" {
+			return nil, fmt.Errorf("steamcmd failed: %w: %s", err, message)
+		}
+		return nil, fmt.Errorf("steamcmd failed: %w", err)
 	}
 
+	entries, err := os.ReadDir(targetPath)
 	if err != nil {
-		message := strings.TrimSpace(
-			string(output),
-		)
-
-		/*
-			Include SteamCMD/Docker output in the
-			error returned to HivePanel.
-
-			This is considerably more useful than
-			only returning "exit status 1/127".
-		*/
-		if message != "" {
-			return nil, fmt.Errorf(
-				"steamcmd failed: %w: %s",
-				err,
-				message,
-			)
-		}
-
-		return nil, fmt.Errorf(
-			"steamcmd failed: %w",
-			err,
-		)
+		return nil, fmt.Errorf("steamcmd could not inspect installation directory: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("steamcmd exited successfully but installed no files into %s", targetPath)
 	}
 
 	return map[string]any{
