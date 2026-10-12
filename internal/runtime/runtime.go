@@ -1,6 +1,9 @@
 package runtime
 
-import "time"
+import (
+	"hivepanel-worker/internal/allocation"
+	"time"
+)
 
 type RuntimeCell struct {
 	ID          string
@@ -14,6 +17,7 @@ type RuntimeCell struct {
 
 	AllocationIP   string
 	AllocationPort int
+	Allocations    []allocation.Allocation
 
 	Limits Limits
 }
@@ -33,6 +37,16 @@ type Runtime interface {
 	Stats(id string) (*Stats, error)
 	IsRunning(id string) bool
 	StartedAt(id string) *time.Time
+}
+
+type StopOptions struct {
+	Command string `json:"command"`
+	Timeout int    `json:"timeout"`
+	Signal  string `json:"signal"`
+}
+
+type ConfigurableStopRuntime interface {
+	StopConfigured(id string, options StopOptions) error
 }
 
 type RecoverableRuntime interface {

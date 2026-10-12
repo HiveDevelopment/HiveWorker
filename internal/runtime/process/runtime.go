@@ -23,6 +23,7 @@ type RunningProcess struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	startedAt time.Time
+	done      chan struct{}
 }
 
 func New() *ProcessRuntime {
@@ -60,12 +61,15 @@ func (r *ProcessRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line 
 		return err
 	}
 
+	configureProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		r.mutex.Unlock()
 		return err
 	}
 
+	done := make(chan struct{})
 	r.processes[cell.ID] = &RunningProcess{
+		done:      done,
 		cmd:       cmd,
 		stdin:     stdin,
 		startedAt: time.Now(),
@@ -78,6 +82,7 @@ func (r *ProcessRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line 
 
 	go func() {
 		_ = cmd.Wait()
+		close(done)
 
 		r.mutex.Lock()
 		delete(r.processes, cell.ID)
@@ -90,15 +95,50 @@ func (r *ProcessRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line 
 }
 
 func (r *ProcessRuntime) Stop(id string) error {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
+	return r.StopConfigured(id, hiveruntime.StopOptions{Timeout: 30, Signal: "SIGTERM"})
+}
 
+func (r *ProcessRuntime) StopConfigured(id string, options hiveruntime.StopOptions) error {
+	r.mutex.Lock()
 	running, exists := r.processes[id]
+	r.mutex.Unlock()
 	if !exists {
 		return errors.New("cell is not running")
 	}
-
-	return running.cmd.Process.Kill()
+	seconds := options.Timeout
+	if seconds <= 0 {
+		seconds = 30
+	}
+	if seconds > 600 {
+		seconds = 600
+	}
+	wait := func() bool {
+		timer := time.NewTimer(time.Duration(seconds) * time.Second)
+		defer timer.Stop()
+		select {
+		case <-running.done:
+			return true
+		case <-timer.C:
+			return false
+		}
+	}
+	if options.Command != "" && r.SendCommand(id, options.Command) == nil {
+		if wait() {
+			return nil
+		}
+	}
+	select {
+	case <-running.done:
+		return nil
+	default:
+	}
+	if err := signalProcess(running.cmd, options.Signal, false); err != nil {
+		return err
+	}
+	if wait() {
+		return nil
+	}
+	return signalProcess(running.cmd, "", true)
 }
 
 func (r *ProcessRuntime) SendCommand(id string, command string) error {

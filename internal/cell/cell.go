@@ -33,15 +33,18 @@ type Cell struct {
 	InstallStatus string `json:"install_status,omitempty"`
 	InstallError  string `json:"install_error,omitempty"`
 
-	Comb                  string                  `json:"comb"`
-	CombData              map[string]any          `json:"comb_data,omitempty"`
-	Variables             map[string]string       `json:"variables"`
-	Allocation            allocation.Allocation   `json:"allocation"`
-	AdditionalAllocations []allocation.Allocation `json:"additional_allocations"`
-	Limits                hiveruntime.Limits      `json:"limits"`
-	FeatureLimits         FeatureLimits           `json:"feature_limits"`
-	Docker                DockerConfig            `json:"docker"`
-	Startup               StartupConfig           `json:"startup"`
+	ConfigurationPending  bool                     `json:"configuration_pending"`
+	ActiveAllocations     []allocation.Allocation  `json:"active_allocations,omitempty"`
+	ActiveStop            *hiveruntime.StopOptions `json:"active_stop,omitempty"`
+	Comb                  string                   `json:"comb"`
+	CombData              map[string]any           `json:"comb_data,omitempty"`
+	Variables             map[string]string        `json:"variables"`
+	Allocation            allocation.Allocation    `json:"allocation"`
+	AdditionalAllocations []allocation.Allocation  `json:"additional_allocations"`
+	Limits                hiveruntime.Limits       `json:"limits"`
+	FeatureLimits         FeatureLimits            `json:"feature_limits"`
+	Docker                DockerConfig             `json:"docker"`
+	Startup               StartupConfig            `json:"startup"`
 
 	console     []ConsoleEntry
 	subscribers map[chan ConsoleEntry]bool
@@ -77,15 +80,16 @@ type UpdateCellDefinitionRequest struct {
 }
 
 type CellStats struct {
-	ID             string  `json:"id"`
-	Running        bool    `json:"running"`
-	UptimeSec      int64   `json:"uptime_sec"`
-	DiskBytes      int64   `json:"disk_bytes"`
-	CPU            float64 `json:"cpu"`
-	MemoryMB       float64 `json:"memory_mb"`
-	PID            int     `json:"pid,omitempty"`
-	NetworkRxBytes uint64  `json:"network_rx_bytes"`
-	NetworkTxBytes uint64  `json:"network_tx_bytes"`
+	ConfigurationPending bool    `json:"configuration_pending"`
+	ID                   string  `json:"id"`
+	Running              bool    `json:"running"`
+	UptimeSec            int64   `json:"uptime_sec"`
+	DiskBytes            int64   `json:"disk_bytes"`
+	CPU                  float64 `json:"cpu"`
+	MemoryMB             float64 `json:"memory_mb"`
+	PID                  int     `json:"pid,omitempty"`
+	NetworkRxBytes       uint64  `json:"network_rx_bytes"`
+	NetworkTxBytes       uint64  `json:"network_tx_bytes"`
 }
 
 type CellLock struct {
@@ -104,6 +108,7 @@ type CellLock struct {
 }
 
 type Manager struct {
+	definitionMutex sync.Mutex
 	mutex           sync.RWMutex
 	cells           map[string]*Cell
 	dataDir         string

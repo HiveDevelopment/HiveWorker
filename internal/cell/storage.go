@@ -18,6 +18,8 @@ import (
 )
 
 func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
+	m.definitionMutex.Lock()
+	defer m.definitionMutex.Unlock()
 	request.ID = strings.TrimSpace(request.ID)
 	request.Name = strings.TrimSpace(request.Name)
 	request.Comb = strings.TrimSpace(request.Comb)
@@ -116,6 +118,10 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		subscribers: map[chan ConsoleEntry]bool{},
 	}
 
+	if err := m.allocManager.ReplaceCellReservations(nil, cellAllocations(gameCell)); err != nil {
+		return nil, err
+	}
+
 	if err := identity.Prepare(dir); err != nil {
 		m.releaseCellAllocations(gameCell)
 		return nil, err
@@ -135,6 +141,8 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 }
 
 func (m *Manager) Delete(id string) error {
+	m.definitionMutex.Lock()
+	defer m.definitionMutex.Unlock()
 	m.mutex.Lock()
 
 	gameCell, exists := m.cells[id]
@@ -168,7 +176,26 @@ func (m *Manager) save(cell *Cell) error {
 		return err
 	}
 
-	return os.WriteFile(m.cellConfigPath(cell.ID), data, 0644)
+	file, err := os.CreateTemp(m.cellDataDir(), ".cell-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(file.Name(), 0644); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), m.cellConfigPath(cell.ID))
 }
 
 func (m *Manager) cellDataDir() string {
@@ -210,6 +237,9 @@ func (m *Manager) CellDir(id string) (string, error) {
 }
 
 func (m *Manager) releaseCellAllocations(gameCell *Cell) {
+	for _, item := range gameCell.ActiveAllocations {
+		m.allocManager.Release(item)
+	}
 	m.allocManager.Release(gameCell.Allocation)
 
 	for _, allocation := range gameCell.AdditionalAllocations {

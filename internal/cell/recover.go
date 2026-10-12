@@ -17,17 +17,27 @@ func (m *Manager) RecoverRuntime() error {
 
 	m.mutex.Unlock()
 
-	return recoverable.Recover(ids, func(cellID string, line string) {
+	err := recoverable.Recover(ids, func(cellID string, line string) {
 		m.mutex.Lock()
 		if cell, exists := m.cells[cellID]; exists {
 			m.broadcast(cell, line)
 		}
 		m.mutex.Unlock()
 	}, func(cellID string) {
+		_ = m.releaseStoppedAllocations(cellID)
 		m.mutex.Lock()
 		if cell, exists := m.cells[cellID]; exists {
 			m.broadcast(cell, "Cell stopped.")
 		}
 		m.mutex.Unlock()
 	})
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := m.releaseStoppedAllocations(id); err != nil {
+			return err
+		}
+	}
+	return nil
 }

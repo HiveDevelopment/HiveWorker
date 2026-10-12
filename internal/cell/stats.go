@@ -18,12 +18,13 @@ func (m *Manager) Stats(id string) (*CellStats, error) {
 	m.mutex.RUnlock()
 
 	stats := &CellStats{
-		ID:        cellCopy.ID,
-		Running:   false,
-		UptimeSec: 0,
-		DiskBytes: 0,
-		CPU:       0,
-		MemoryMB:  0,
+		ID:                   cellCopy.ID,
+		ConfigurationPending: cellCopy.ConfigurationPending,
+		Running:              false,
+		UptimeSec:            0,
+		DiskBytes:            0,
+		CPU:                  0,
+		MemoryMB:             0,
 	}
 
 	stats.Running = m.runtime.IsRunning(id)

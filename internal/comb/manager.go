@@ -3,25 +3,29 @@ package comb
 import (
 	"encoding/json"
 	"errors"
+	hiveruntime "hivepanel-worker/internal/runtime"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Comb struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	Category     string            `json:"category,omitempty"`
-	Group        string            `json:"group,omitempty"`
-	Game         string            `json:"game,omitempty"`
-	Tags         []string          `json:"tags,omitempty"`
-	Capabilities []string          `json:"capabilities,omitempty"`
-	Startup      string            `json:"startup"`
-	Variables    map[string]string `json:"variables"`
-	Install      []InstallStep     `json:"install"`
-	Image        string            `json:"image"`
-	WorkingDir   string            `json:"working_dir"`
-	Entrypoint   []string          `json:"entrypoint"`
-	Environment  map[string]string `json:"environment"`
+	ID              string                   `json:"id"`
+	Name            string                   `json:"name"`
+	Category        string                   `json:"category,omitempty"`
+	Group           string                   `json:"group,omitempty"`
+	Game            string                   `json:"game,omitempty"`
+	Tags            []string                 `json:"tags,omitempty"`
+	Capabilities    []string                 `json:"capabilities,omitempty"`
+	ConsoleCommands []string                 `json:"console_commands,omitempty"`
+	Stop            *hiveruntime.StopOptions `json:"stop,omitempty"`
+	Startup         string                   `json:"startup"`
+	Variables       map[string]string        `json:"variables"`
+	Install         []InstallStep            `json:"install"`
+	Image           string                   `json:"image"`
+	WorkingDir      string                   `json:"working_dir"`
+	Entrypoint      []string                 `json:"entrypoint"`
+	Environment     map[string]string        `json:"environment"`
 }
 
 type InstallStep struct {
@@ -73,6 +77,9 @@ func (m *Manager) Load() error {
 			return errors.New("comb id is required: " + path)
 		}
 
+		if err := ValidateStop(loaded.Stop); err != nil {
+			return err
+		}
 		m.combs[loaded.ID] = &loaded
 
 		return nil
@@ -118,5 +125,26 @@ func FromMap(data map[string]any) (*Comb, error) {
 		return nil, errors.New("comb id is required")
 	}
 
+	if err := ValidateStop(c.Stop); err != nil {
+		return nil, err
+	}
 	return &c, nil
+}
+
+func ValidateStop(options *hiveruntime.StopOptions) error {
+	if options == nil {
+		return nil
+	}
+	if options.Timeout < 0 || options.Timeout > 600 {
+		return errors.New("stop timeout must be between 0 and 600 seconds")
+	}
+	if len(options.Command) > 1000 || strings.ContainsAny(options.Command, "\r\n") {
+		return errors.New("stop command must be a single console command")
+	}
+	switch options.Signal {
+	case "", "SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT":
+	default:
+		return errors.New("unsupported stop signal")
+	}
+	return nil
 }

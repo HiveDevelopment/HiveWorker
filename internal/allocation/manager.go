@@ -244,8 +244,12 @@ func isPortFree(ip string, port int) bool {
 		return false
 	}
 
-	_ = listener.Close()
-
+	defer listener.Close()
+	packet, err := net.ListenPacket("udp", address)
+	if err != nil {
+		return false
+	}
+	_ = packet.Close()
 	return true
 }
 
@@ -328,4 +332,35 @@ func allocationSet(allocations []Allocation) map[string]bool {
 
 func cloneAllocations(allocations []Allocation) []Allocation {
 	return append([]Allocation(nil), allocations...)
+}
+
+// Reserve desired and still-active ports atomically, rejecting ports owned by
+// another Cell. A queued removal stays reserved until the old container is gone.
+func (m *Manager) ReplaceCellReservations(oldAllocations, newAllocations []Allocation) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	old := allocationSet(oldAllocations)
+	allowed := allocationSet(m.allowed)
+	for _, item := range newAllocations {
+		if err := validateAllocation(item); err != nil {
+			return err
+		}
+		key := allocationKey(item)
+		if !old[key] && !allowed[key] {
+			return errors.New("allocation is not configured on this node")
+		}
+		if m.used[key] && !old[key] {
+			return errors.New("allocation is reserved by another Cell")
+		}
+		if !old[key] && !isPortFree(item.IP, item.Port) {
+			return errors.New("allocation TCP or UDP port is already in use")
+		}
+	}
+	for key := range old {
+		delete(m.used, key)
+	}
+	for _, item := range newAllocations {
+		m.used[allocationKey(item)] = true
+	}
+	return nil
 }

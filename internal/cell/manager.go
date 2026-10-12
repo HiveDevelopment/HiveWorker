@@ -157,8 +157,9 @@ func (m *Manager) Status(id string) (*Cell, error) {
 
 	m.mutex.RUnlock()
 
-	// Keep this simple for now. Do not call Docker/runtime here.
-	if copyCell.Status == "" {
+	if m.runtime.IsRunning(id) {
+		copyCell.Status = "running"
+	} else {
 		copyCell.Status = "offline"
 	}
 
@@ -166,6 +167,7 @@ func (m *Manager) Status(id string) (*Cell, error) {
 }
 
 func (m *Manager) reserveCellAllocations(gameCell *Cell) {
+	m.allocManager.ReserveMany(gameCell.ActiveAllocations)
 	m.allocManager.ReserveExisting(gameCell.Allocation)
 
 	for _, allocation := range gameCell.AdditionalAllocations {

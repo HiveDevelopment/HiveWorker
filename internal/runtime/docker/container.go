@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
 	"hivepanel-worker/internal/identity"
 
 	hiveruntime "hivepanel-worker/internal/runtime"
@@ -49,7 +48,10 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 		return err
 	}
 
-	port := nat.Port(fmt.Sprintf("%d/tcp", cell.AllocationPort))
+	exposedPorts, portBindings, err := allocationPorts(cell)
+	if err != nil {
+		return err
+	}
 
 	env := []string{}
 	for key, value := range cell.Environment {
@@ -73,25 +75,16 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 			AttachStdin:  true,
 			AttachStdout: true,
 			AttachStderr: true,
-			ExposedPorts: nat.PortSet{
-				port: struct{}{},
-			},
+			ExposedPorts: exposedPorts,
 			Labels: map[string]string{
 				labelManagedBy:      "true",
 				"hivepanel.cell_id": cell.ID,
 			},
 		},
 		&container.HostConfig{
-			Binds: []string{instanceAbs + ":" + cell.WorkingDir + ":Z"},
-			PortBindings: nat.PortMap{
-				port: []nat.PortBinding{
-					{
-						HostIP:   cell.AllocationIP,
-						HostPort: fmt.Sprint(cell.AllocationPort),
-					},
-				},
-			},
-			Resources: dockerResources(cell.Limits),
+			Binds:        []string{instanceAbs + ":" + cell.WorkingDir + ":Z"},
+			PortBindings: portBindings,
+			Resources:    dockerResources(cell.Limits),
 		},
 		&dockernetwork.NetworkingConfig{
 			EndpointsConfig: map[string]*dockernetwork.EndpointSettings{
@@ -164,30 +157,49 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 }
 
 func (r *DockerRuntime) Stop(id string) error {
+	return r.StopConfigured(id, hiveruntime.StopOptions{Command: "stop", Timeout: 30, Signal: "SIGTERM"})
+}
+
+func (r *DockerRuntime) StopConfigured(id string, options hiveruntime.StopOptions) error {
 	r.mutex.Lock()
 	containerID, exists := r.containers[id]
-	stdin := r.stdin[id]
 	r.mutex.Unlock()
-
 	if !exists {
 		return errors.New("cell is not running")
 	}
-
-	if stdin != nil {
-		_, _ = io.WriteString(stdin, "stop\n")
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = 30
 	}
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		timeout := 25
-		_ = r.client.ContainerStop(ctx, containerID, container.StopOptions{
-			Timeout: &timeout,
-		})
-	}()
-
-	return nil
+	if timeout > 600 {
+		timeout = 600
+	}
+	signal := options.Signal
+	if signal == "" {
+		signal = "SIGTERM"
+	}
+	// Give the console command time to save and exit before sending a signal.
+	if options.Command != "" && r.SendCommand(id, options.Command) == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+		statusCh, errCh := r.client.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
+		select {
+		case <-statusCh:
+			cancel()
+			return nil
+		case err := <-errCh:
+			cancel()
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+				return err
+			}
+		case <-ctx.Done():
+			cancel()
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout+5)*time.Second)
+	defer cancel()
+	// Signal-only servers receive the configured signal immediately, followed
+	// by Docker's forced termination only when the grace period expires.
+	return r.client.ContainerStop(ctx, containerID, container.StopOptions{Signal: signal, Timeout: &timeout})
 }
 
 func (r *DockerRuntime) SendCommand(id string, command string) error {

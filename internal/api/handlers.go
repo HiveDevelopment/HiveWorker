@@ -23,6 +23,7 @@ import (
 	"hivepanel-worker/internal/migrationdetect"
 	"hivepanel-worker/internal/node"
 	"hivepanel-worker/internal/players"
+	hiveruntime "hivepanel-worker/internal/runtime"
 	"hivepanel-worker/internal/updater"
 )
 
@@ -314,9 +315,18 @@ func (h *Handler) StopCell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.Manager.ClearConsole(id)
-
-	if err := h.Manager.Stop(id); err != nil {
+	var request struct {
+		Stop *hiveruntime.StopOptions `json:"stop"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid shutdown configuration", http.StatusBadRequest)
+		return
+	}
+	if err := comb.ValidateStop(request.Stop); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.Manager.StopWithOptions(id, request.Stop); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

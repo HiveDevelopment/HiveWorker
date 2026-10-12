@@ -10,6 +10,8 @@ import (
 )
 
 func (m *Manager) Start(id string) error {
+	m.definitionMutex.Lock()
+	defer m.definitionMutex.Unlock()
 	m.mutex.Lock()
 
 	cell, exists := m.cells[id]
@@ -67,7 +69,7 @@ func (m *Manager) Start(id string) error {
 
 	m.broadcastByID(id, "Cell started.")
 
-	return m.runtime.Start(hiveruntime.RuntimeCell{
+	err = m.runtime.Start(hiveruntime.RuntimeCell{
 		ID:             cellCopy.ID,
 		Command:        command,
 		InstanceDir:    cellCopy.Dir,
@@ -76,17 +78,50 @@ func (m *Manager) Start(id string) error {
 		Environment:    environment,
 		AllocationIP:   cellCopy.Allocation.IP,
 		AllocationPort: cellCopy.Allocation.Port,
+		Allocations:    cellAllocations(&cellCopy),
 		Limits:         cellCopy.Limits,
 	}, func(line string) {
 		m.broadcastByID(id, line)
 	}, func() {
+		if err := m.releaseStoppedAllocations(id); err != nil {
+			m.broadcastByID(id, "Could not release stopped allocations: "+err.Error())
+		}
 		m.broadcastByID(id, "Cell stopped.")
 	})
+	if err != nil {
+		return err
+	}
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	current := m.cells[id]
+	m.allocManager.ReplaceReservations(reservedCellAllocations(current), cellAllocations(current))
+	current.ActiveAllocations = nil
+	current.ConfigurationPending = false
+	current.ActiveStop = selectedComb.Stop
+	if current.ActiveStop == nil {
+		current.ActiveStop = &hiveruntime.StopOptions{Command: "stop", Timeout: 30, Signal: "SIGTERM"}
+	}
+	return m.save(current)
 }
 
 func (m *Manager) Stop(id string) error {
+	return m.StopWithOptions(id, nil)
+}
+
+func (m *Manager) StopWithOptions(id string, requested *hiveruntime.StopOptions) error {
 	m.mutex.Lock()
-	_, exists := m.cells[id]
+	gameCell, exists := m.cells[id]
+	options := hiveruntime.StopOptions{Command: "stop", Timeout: 30, Signal: "SIGTERM"}
+	if exists {
+		if gameCell.ActiveStop != nil {
+			options = *gameCell.ActiveStop
+		} else if selected, err := m.resolveCellComb(gameCell); err == nil && selected.Stop != nil {
+			options = *selected.Stop
+		}
+	}
+	if requested != nil {
+		options = *requested
+	}
 	m.mutex.Unlock()
 
 	if !exists {
@@ -96,7 +131,13 @@ func (m *Manager) Stop(id string) error {
 	go func() {
 		m.broadcastByID(id, "Stopping cell...")
 
-		if err := m.runtime.Stop(id); err != nil {
+		var err error
+		if configured, ok := m.runtime.(hiveruntime.ConfigurableStopRuntime); ok {
+			err = configured.StopConfigured(id, options)
+		} else {
+			err = m.runtime.Stop(id)
+		}
+		if err != nil {
 			m.broadcastByID(id, "Stop failed: "+err.Error())
 		}
 	}()
