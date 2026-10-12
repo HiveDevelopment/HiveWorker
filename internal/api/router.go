@@ -48,6 +48,7 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 	mux.Handle("GET /cells/{id}/install/status", auth.Middleware(cfg, http.HandlerFunc(handler.CellInstallStatus)))
 	mux.Handle("POST /cells/{id}/reinstall", auth.Middleware(cfg, http.HandlerFunc(handler.ReinstallCell)))
 	mux.Handle("POST /cells/{id}/start", auth.Middleware(cfg, http.HandlerFunc(handler.StartCell)))
+	mux.Handle("POST /cells/{id}/network/tcp", auth.Middleware(cfg, http.HandlerFunc(handler.NectarTCP)))
 	mux.Handle("POST /cells/{id}/stop", auth.Middleware(cfg, http.HandlerFunc(handler.StopCell)))
 	mux.Handle("POST /cells/{id}/command", auth.Middleware(cfg, http.HandlerFunc(handler.SendCommand)))
 

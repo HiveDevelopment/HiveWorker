@@ -28,6 +28,7 @@ import (
 )
 
 type Handler struct {
+	nectarTCP    nectarTCPPool
 	Config       config.Config
 	Manager      *cell.Manager
 	CombManager  *comb.Manager
