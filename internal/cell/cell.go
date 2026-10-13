@@ -80,6 +80,7 @@ type UpdateCellDefinitionRequest struct {
 }
 
 type CellStats struct {
+	DiskReady            bool    `json:"disk_ready"`
 	ConfigurationPending bool    `json:"configuration_pending"`
 	ID                   string  `json:"id"`
 	Running              bool    `json:"running"`
@@ -108,6 +109,8 @@ type CellLock struct {
 }
 
 type Manager struct {
+	diskCache       map[string]*diskMeasurement
+	diskScans       chan struct{}
 	definitionMutex sync.Mutex
 	mutex           sync.RWMutex
 	cells           map[string]*Cell

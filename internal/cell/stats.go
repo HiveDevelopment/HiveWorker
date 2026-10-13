@@ -29,7 +29,7 @@ func (m *Manager) Stats(id string) (*CellStats, error) {
 
 	stats.Running = m.runtime.IsRunning(id)
 
-	if startedAt := m.runtime.StartedAt(id); startedAt != nil {
+	if startedAt := m.runtime.StartedAt(id); stats.Running && startedAt != nil {
 		stats.UptimeSec = int64(time.Since(*startedAt).Seconds())
 	}
 
@@ -42,9 +42,8 @@ func (m *Manager) Stats(id string) (*CellStats, error) {
 		stats.NetworkTxBytes = runtimeStats.NetworkTxBytes
 	}
 
-	// Do NOT calculate folderSize here during live polling.
-	// Disk scanning can block the stats endpoint badly on large server folders.
-	stats.DiskBytes = 0
+	// Serve the last measurement; scan in the background rather than delaying polling.
+	stats.DiskBytes, stats.DiskReady = m.cachedDisk(id, cellCopy.Dir)
 
 	return stats, nil
 }

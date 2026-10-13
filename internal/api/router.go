@@ -37,6 +37,7 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 	mux.Handle("GET /combs", auth.Middleware(cfg, http.HandlerFunc(handler.ListCombs)))
 	mux.Handle("GET /combs/{id}", auth.Middleware(cfg, http.HandlerFunc(handler.GetComb)))
 
+	mux.Handle("GET /cells/overview", auth.Middleware(cfg, http.HandlerFunc(handler.CellOverview)))
 	mux.Handle("GET /cells", auth.Middleware(cfg, http.HandlerFunc(handler.ListCells)))
 	mux.Handle("POST /cells", auth.Middleware(cfg, http.HandlerFunc(handler.CreateCell)))
 	mux.Handle("GET /cells/{id}", auth.Middleware(cfg, http.HandlerFunc(handler.CellStatus)))

@@ -282,15 +282,7 @@ func stepRun(
 	cmd := shellCommand(command)
 	cmd.Dir = ctx.InstanceDir
 
-	output, err := cmd.CombinedOutput()
-
-	if len(output) > 0 {
-		ctx.Log(
-			strings.TrimSpace(
-				string(output),
-			),
-		)
-	}
+	output, err := runLogged(cmd, ctx.Log)
 
 	return map[string]any{
 		"command": command,
@@ -719,15 +711,7 @@ func stepGit(
 		args...,
 	)
 
-	output, err := cmd.CombinedOutput()
-
-	if len(output) > 0 {
-		ctx.Log(
-			strings.TrimSpace(
-				string(output),
-			),
-		)
-	}
+	output, err := runLogged(cmd, ctx.Log)
 
 	return map[string]any{
 		"repository": repository,
@@ -843,10 +827,7 @@ func stepSteamCMD(ctx *Context, step comb.InstallStep) (any, error) {
 
 	ctx.Log(fmt.Sprintf("Installing Steam application %s with SteamCMD (UID %d, GID %d)", appID, uid, gid))
 	cmd := exec.Command("docker", args...)
-	output, err := cmd.CombinedOutput()
-	if len(output) > 0 {
-		ctx.Log(strings.TrimSpace(string(output)))
-	}
+	output, err := runLogged(cmd, ctx.Log)
 	if err != nil {
 		return nil, fmt.Errorf("steamcmd failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
