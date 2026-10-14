@@ -11,12 +11,21 @@ import (
 )
 
 func (m *Manager) StartInstall(id string) error {
+	m.definitionMutex.Lock()
+	defer m.definitionMutex.Unlock()
+	return m.startInstall(id)
+}
+func (m *Manager) startInstall(id string) error {
 	m.mutex.Lock()
 
 	gameCell, exists := m.cells[id]
 	if !exists {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
+	}
+	if gameCell.Lock.Type == "content_install" {
+		m.mutex.Unlock()
+		return errors.New("content installation is in progress")
 	}
 
 	if m.runtime.IsRunning(id) {
@@ -35,6 +44,8 @@ func (m *Manager) StartInstall(id string) error {
 		return err
 	}
 
+	delete(m.contentJobs, id)
+	_ = os.Remove(m.contentPath(id))
 	gameCell.InstallStatus = "installing"
 	gameCell.InstallError = ""
 	_ = m.save(gameCell)
@@ -117,6 +128,8 @@ func (m *Manager) InstallState(id string) (string, string, error) {
 }
 
 func (m *Manager) Reinstall(id string) error {
+	m.definitionMutex.Lock()
+	defer m.definitionMutex.Unlock()
 	m.mutex.Lock()
 
 	gameCell, exists := m.cells[id]
@@ -124,10 +137,20 @@ func (m *Manager) Reinstall(id string) error {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
+	if gameCell.Lock.Type == "content_install" {
+		m.mutex.Unlock()
+		return errors.New("content installation is in progress")
+	}
 
 	if m.runtime.IsRunning(id) {
 		m.mutex.Unlock()
 		return errors.New("cell must be stopped before reinstalling")
+	}
+
+	gameCell.InstallStatus = "pending"
+	if err := m.save(gameCell); err != nil {
+		m.mutex.Unlock()
+		return err
 	}
 
 	dir := gameCell.Dir

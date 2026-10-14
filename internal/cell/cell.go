@@ -67,6 +67,7 @@ type CreateCellRequest struct {
 }
 
 type UpdateCellDefinitionRequest struct {
+	ContentJobID          string                  `json:"content_job_id"`
 	Name                  string                  `json:"name"`
 	Comb                  string                  `json:"comb"`
 	CombData              map[string]any          `json:"comb_data"`
@@ -120,5 +121,6 @@ type Manager struct {
 	runtime         hiveruntime.Runtime
 	allocManager    *allocation.Manager
 	backupManager   *backup.Manager
+	contentJobs     map[string]*ContentJob
 	consoleSessions map[string]ConsoleSession
 }

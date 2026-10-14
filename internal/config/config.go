@@ -22,6 +22,9 @@ import (
 
 type Config struct {
 	ConfigPath string `yaml:"-"`
+	Minecraft  struct {
+		RegistryURL string `yaml:"registry_url"`
+	} `yaml:"minecraft"`
 
 	Panel       PanelConfig      `yaml:"panel"`
 	Worker      WorkerConfig     `yaml:"worker"`

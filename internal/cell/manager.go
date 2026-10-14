@@ -23,6 +23,7 @@ func NewManager(
 ) *Manager {
 	return &Manager{
 		cells:           map[string]*Cell{},
+		contentJobs:     map[string]*ContentJob{},
 		dataDir:         dataDir,
 		instancesDir:    instancesDir,
 		combManager:     combManager,
@@ -81,6 +82,11 @@ func (m *Manager) Load() error {
 
 		if lock, err := loadLock(gameCell.Dir); err == nil {
 			gameCell.Lock = lock
+		}
+
+		m.loadContentJob(gameCell.ID)
+		if gameCell.Lock.Type == "content_install" || (m.contentJobs[gameCell.ID] != nil && m.contentJobs[gameCell.ID].State == "installing") {
+			m.recoverContent(&gameCell)
 		}
 
 		m.reserveCellAllocations(&gameCell)

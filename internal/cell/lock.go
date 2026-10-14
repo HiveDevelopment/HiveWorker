@@ -91,6 +91,9 @@ func (m *Manager) UnlockCell(id string) error {
 	if !exists {
 		return errors.New("cell not found")
 	}
+	if gameCell.Lock.Type == "content_install" {
+		return errors.New("content installation must finish before unlocking")
+	}
 
 	gameCell.Lock = CellLock{}
 
@@ -232,7 +235,19 @@ func saveLock(cellDir string, lock CellLock) error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(dir, lockFileName), data, 0644)
+	f, err := os.CreateTemp(dir, ".lock-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), filepath.Join(dir, lockFileName))
 }
 
 func loadLock(cellDir string) (CellLock, error) {

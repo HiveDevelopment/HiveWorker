@@ -1,6 +1,7 @@
 package sftp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -116,6 +117,9 @@ func (filesystem *jailedFilesystem) Fileread(
 func (filesystem *jailedFilesystem) Filewrite(
 	request *pkgsftp.Request,
 ) (io.WriterAt, error) {
+	if err := filesystem.ensureWritable(); err != nil {
+		return nil, err
+	}
 	flags := request.Pflags()
 
 	if !filesystem.permissions.Write {
@@ -166,7 +170,7 @@ func (filesystem *jailedFilesystem) Filewrite(
 		return nil, err
 	}
 
-	return file, nil
+	return &lockedWriter{File: file, filesystem: filesystem}, nil
 }
 
 /*
@@ -176,6 +180,9 @@ func (filesystem *jailedFilesystem) Filewrite(
 func (filesystem *jailedFilesystem) Filecmd(
 	request *pkgsftp.Request,
 ) error {
+	if err := filesystem.ensureWritable(); err != nil {
+		return err
+	}
 	switch request.Method {
 	case "Mkdir":
 		return filesystem.mkdir(request)
@@ -743,4 +750,39 @@ func (filesystem *jailedFilesystem) isRoot(
 	resolved string,
 ) bool {
 	return filepath.Clean(resolved) == filesystem.root
+}
+
+// Long-lived SFTP sessions honor locks created after authentication, including
+// handles opened before an installer reserves the Cell.
+func (f *jailedFilesystem) ensureWritable() error {
+	data, err := os.ReadFile(filepath.Join(f.root, ".hivepanel", "lock.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var lock struct {
+		Locked       bool `json:"locked"`
+		DisableFiles bool `json:"disable_files"`
+	}
+	if json.Unmarshal(data, &lock) != nil {
+		return errPermissionDenied
+	}
+	if lock.Locked && lock.DisableFiles {
+		return errPermissionDenied
+	}
+	return nil
+}
+
+type lockedWriter struct {
+	*os.File
+	filesystem *jailedFilesystem
+}
+
+func (w *lockedWriter) WriteAt(p []byte, off int64) (int, error) {
+	if err := w.filesystem.ensureWritable(); err != nil {
+		return 0, err
+	}
+	return w.File.WriteAt(p, off)
 }

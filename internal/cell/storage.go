@@ -150,6 +150,10 @@ func (m *Manager) Delete(id string) error {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
+	if gameCell.Lock.Type == "content_install" {
+		m.mutex.Unlock()
+		return errors.New("content installation is in progress")
+	}
 
 	if m.runtime.IsRunning(id) {
 		m.mutex.Unlock()

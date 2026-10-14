@@ -19,7 +19,15 @@ func (m *Manager) Start(id string) error {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
+	if cell.Lock.Type == "content_install" {
+		m.mutex.Unlock()
+		return errors.New("content installation is in progress")
+	}
 
+	if cell.InstallStatus == "installing" || cell.InstallStatus == "pending" || cell.InstallStatus == "failed" {
+		m.mutex.Unlock()
+		return errors.New("Cell installation must complete before starting")
+	}
 	cellCopy := *cell
 
 	selectedComb, err := m.resolveCellComb(cell)
