@@ -22,7 +22,10 @@ import (
 
 type Config struct {
 	ConfigPath string `yaml:"-"`
-	Minecraft  struct {
+	Registry   struct {
+		URL string `yaml:"url"`
+	} `yaml:"registry"`
+	Minecraft struct {
 		RegistryURL string `yaml:"registry_url"`
 	} `yaml:"minecraft"`
 

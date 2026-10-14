@@ -14,7 +14,14 @@ func (h *Handler) InstallContent(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(w, 400, map[string]string{"message": "Invalid install plan"})
 		return
 	}
-	registry := strings.TrimRight(h.Config.Minecraft.RegistryURL, "/")
+	if plan.Kind == "preinstall" && h.Config.Runtime.Type != "docker" {
+		writeJSONStatus(w, 409, map[string]string{"message": "Preinstalls require the Docker runtime"})
+		return
+	}
+	registry := strings.TrimRight(h.Config.Registry.URL, "/")
+	if registry == "" {
+		registry = strings.TrimRight(h.Config.Minecraft.RegistryURL, "/")
+	}
 	if registry == "" {
 		registry = "https://registry.hivepanel.dev"
 	}

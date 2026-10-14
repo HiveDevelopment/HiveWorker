@@ -406,3 +406,15 @@ Provider fixture tests live in HiveRegistry. Real Docker image/loader installati
 - **HiveRegistry** — Combs, Minecraft catalogue resolution and cached installation assets.
 
 Visit [hivepanel.dev](https://hivepanel.dev) for the project website.
+
+
+## Generic preinstalls
+
+The content-install endpoint also accepts administrator-offered Registry preinstall plans. It downloads and pins the prebuilt image, creates private configuration inside staging, then commits a full file replacement with an installation backup. Image-download failures leave Cell files intact. Content locks, preview authorization in the Panel, restart recovery and job acknowledgement also apply to these installs. Required credentials are configured through private Cell variables after installation.
+
+Configure the Registry with `registry.url` in `worker.yml`; `minecraft.registry_url` remains a legacy fallback. The Registry must use HTTPS. Preset artifact URLs must match that origin and use `/api/v1/preinstalls/artifacts/{id}`. Linux and Docker are required. The Worker does not automatically start the bot or contact Discord while installing.
+
+
+Source preinstalls execute administrator-authored `git`, `mkdir`, `copy`, `move`, `delete`, `write_file`, `download`, `extract` (tar.gz) and `run` steps in an isolated temporary Docker container. The only persistent bind is the staging directory; the image filesystem is read-only and host capabilities/socket access are not granted. The runner cleans up after failures and detects interrupted recipe containers during recovery. Secret runtime variables are not forwarded to build steps. Dependency symlinks are accepted only when they resolve inside the staged tree.
+
+Combs may declare a `docker_images` label-to-image map. The Panel validates image choices and passes the selected image through definition updates. Port mappings are recreated on the next stop/start; additional TCP and UDP allocations are included. Cell deletion removes its owned stopped Docker container before deleting Cell files and metadata; Docker removal errors preserve the Cell records and files.

@@ -57,3 +57,80 @@ func TestCommittedContentRestoresStartupAfterWorkerRestart(t *testing.T) {
 		t.Fatalf("recovery failed: %s %+v", data, job)
 	}
 }
+func TestPublicContentStatusKeepsPathsRelativeWithoutChangingRecoveryState(t *testing.T) {
+	m := contentFixture(t)
+	root := m.cells["cell"].Dir
+	backup := filepath.Join(root, ".hivepanel", "content-backups", "job")
+	m.contentJobs["cell"] = &ContentJob{ID: "job", State: "complete", Message: "Previous files in " + backup, Logs: []string{"Failed file " + filepath.Join(root, "config.json")}, Result: &minecraft.Result{Backup: backup}}
+	public, err := m.ContentStatus("cell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if public.Result.Backup != ".hivepanel/content-backups/job" || public.Logs[0] != "Failed file config.json" {
+		t.Fatalf("host paths exposed: %+v", public)
+	}
+	if m.contentJobs["cell"].Result.Backup != backup || m.contentJobs["cell"].Logs[0] == public.Logs[0] {
+		t.Fatal("public projection changed durable recovery state")
+	}
+}
+
+func TestCommittedPreinstallRestoresRuntimeWithoutMinecraftVariables(t *testing.T) {
+	m := contentFixture(t)
+	c := m.cells["cell"]
+	c.Variables = map[string]string{"memory": "2048", "DISCORD_TOKEN": "private-token"}
+	backup := filepath.Join(c.Dir, ".hivepanel", "content-backups", "preset")
+	os.MkdirAll(backup, 0750)
+	os.WriteFile(filepath.Join(backup, "journal.json"), []byte(`{"committed":true,"entries":[]}`), 0600)
+	job := &ContentJob{ID: "preset", State: "installing", Plan: minecraft.Plan{Kind: "preinstall", Runtime: &minecraft.PreinstallRuntime{Image: "node:22", Startup: "node app.js", Environment: map[string]string{"DISCORD_TOKEN": "{{DISCORD_TOKEN}}"}, VariablesSchema: []map[string]any{{"name": "DISCORD_TOKEN", "default": ""}, {"name": "SUPER", "default": ""}}}}, Result: &minecraft.Result{Startup: "node app.js", Image: "node@sha256:verified", Backup: backup}}
+	m.contentJobs[c.ID] = job
+	c.Lock = CellLock{Locked: true, Type: "content_install"}
+	m.recoverContent(c)
+	if c.Startup.Command != "node app.js" || c.Docker.Image != "node@sha256:verified" || c.CombData["image"] != c.Docker.Image || job.State != "complete" || c.Lock.Locked {
+		t.Fatal("preinstall runtime recovery failed")
+	}
+	if c.Variables["DISCORD_TOKEN"] != "private-token" || c.Variables["memory"] != "2048" {
+		t.Fatal("existing variables lost")
+	}
+	if _, exists := c.Variables["loader_version"]; exists {
+		t.Fatal("Minecraft variables added to bot")
+	}
+}
+
+type deletionRuntime struct {
+	*definitionRuntime
+	fail   bool
+	called bool
+}
+
+func (r *deletionRuntime) Delete(id string) error {
+	r.called = true
+	if r.fail {
+		return os.ErrPermission
+	}
+	return nil
+}
+func TestCellDeletionPreservesStateWhenContainerRemovalFails(t *testing.T) {
+	m := contentFixture(t)
+	c := m.cells["cell"]
+	runtime := &deletionRuntime{definitionRuntime: &definitionRuntime{}, fail: true}
+	m.runtime = runtime
+	if err := m.Delete("cell"); err == nil {
+		t.Fatal("Docker deletion failure ignored")
+	}
+	if !runtime.called || m.cells["cell"] == nil {
+		t.Fatal("Cell removed despite failed Docker deletion")
+	}
+	if _, err := os.Stat(c.Dir); err != nil {
+		t.Fatal("files deleted despite failed Docker deletion")
+	}
+	runtime.fail = false
+	if err := m.Delete("cell"); err != nil {
+		t.Fatal(err)
+	}
+	if m.cells["cell"] != nil {
+		t.Fatal("Cell record retained after deletion")
+	}
+	if _, err := os.Stat(c.Dir); !os.IsNotExist(err) {
+		t.Fatal("Cell files retained after deletion")
+	}
+}

@@ -67,7 +67,7 @@ func (m *Manager) UpdateDefinition(id string, request UpdateCellDefinitionReques
 	}
 
 	if job := m.contentJobs[id]; job != nil && job.State == "complete" && request.ContentJobID != job.ID {
-		return nil, errors.New("synchronize completed Minecraft installation before changing the Cell definition")
+		return nil, errors.New("synchronize the completed content installation before changing the Cell definition")
 	}
 	previous := *gameCell
 	running := m.runtime.IsRunning(id)

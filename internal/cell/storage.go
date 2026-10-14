@@ -15,6 +15,7 @@ import (
 	"hivepanel-worker/internal/allocation"
 	"hivepanel-worker/internal/comb"
 	"hivepanel-worker/internal/identity"
+	hiveruntime "hivepanel-worker/internal/runtime"
 )
 
 func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
@@ -160,14 +161,27 @@ func (m *Manager) Delete(id string) error {
 		return errors.New("cell must be stopped first")
 	}
 
+	m.mutex.Unlock()
+	if disposable, ok := m.runtime.(hiveruntime.DeletableRuntime); ok {
+		if err := disposable.Delete(id); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(gameCell.Dir); err != nil {
+		return err
+	}
+	if err := os.Remove(m.cellConfigPath(id)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	m.mutex.Lock()
 	m.releaseCellAllocations(gameCell)
 
 	delete(m.cells, id)
+	delete(m.contentJobs, id)
 	m.mutex.Unlock()
 
-	_ = os.Remove(m.cellConfigPath(id))
-
-	return os.RemoveAll(gameCell.Dir)
+	_ = os.Remove(m.contentPath(id))
+	return nil
 }
 
 func (m *Manager) save(cell *Cell) error {

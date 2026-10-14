@@ -68,7 +68,8 @@ func (m *Manager) loadContentJob(id string) {
 func (m *Manager) ContentStatus(id string) (*ContentJob, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-	if _, ok := m.cells[id]; !ok {
+	c, ok := m.cells[id]
+	if !ok {
 		return nil, errors.New("cell not found")
 	}
 	job := m.contentJobs[id]
@@ -77,6 +78,25 @@ func (m *Manager) ContentStatus(id string) (*ContentJob, error) {
 	}
 	copy := *job
 	copy.Logs = append([]string{}, job.Logs...)
+	// Public job output uses Cell-relative paths; durable recovery keeps host paths internally.
+	prefix := filepath.Clean(c.Dir) + string(filepath.Separator)
+	clean := func(value string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(value, prefix, ""), "/home/container/", "")
+	}
+	copy.Message = clean(copy.Message)
+	for index, line := range copy.Logs {
+		copy.Logs[index] = clean(line)
+	}
+	if job.Result != nil {
+		result := *job.Result
+		if relative, err := filepath.Rel(c.Dir, result.Backup); err == nil && !strings.HasPrefix(relative, "..") {
+			result.Backup = filepath.ToSlash(relative)
+		} else {
+			result.Backup = "Cell installation backup"
+		}
+		copy.Result = &result
+	}
+
 	return &copy, nil
 }
 func (m *Manager) StartContentInstall(id, registry string, plan minecraft.Plan) (*ContentJob, error) {
@@ -111,7 +131,7 @@ func (m *Manager) StartContentInstall(id, registry string, plan minecraft.Plan) 
 		return nil, err
 	}
 	job := &ContentJob{ID: hex.EncodeToString(bytes), State: "installing", Message: "Preparing installation", Logs: []string{}, Plan: plan}
-	c.Lock = CellLock{Locked: true, Type: "content_install", Message: "Installing Minecraft content", DisablePower: true, DisableFiles: true, DisableBackups: true, DisableSettings: true, DisableImporter: true}
+	c.Lock = CellLock{Locked: true, Type: "content_install", Message: "Installing Cell content", DisablePower: true, DisableFiles: true, DisableBackups: true, DisableSettings: true, DisableImporter: true}
 	if err = saveLock(c.Dir, c.Lock); err != nil {
 		c.Lock = CellLock{}
 		return nil, err
@@ -129,6 +149,27 @@ func (m *Manager) StartContentInstall(id, registry string, plan minecraft.Plan) 
 		delete(m.contentJobs, id)
 		return nil, err
 	}
+	if plan.Runtime != nil {
+		runtimeCopy := *plan.Runtime
+		runtimeCopy.InstallVariables = make(map[string]string)
+		for _, variable := range runtimeCopy.VariablesSchema {
+			name, _ := variable["name"].(string)
+			value, _ := variable["default"].(string)
+			runtimeCopy.InstallVariables[name] = value
+		}
+		for _, variable := range runtimeCopy.VariablesSchema {
+			name, _ := variable["name"].(string)
+			if variable["install"] == true && variable["secret"] != true {
+				if value, exists := c.Variables[name]; exists {
+					runtimeCopy.InstallVariables[name] = value
+				}
+			}
+		}
+		for key, value := range runtimeCopy.Parameters {
+			runtimeCopy.InstallVariables[key] = value
+		}
+		plan.Runtime = &runtimeCopy
+	}
 	dir := c.Dir
 	port := c.Allocation.Port
 	go m.runContentInstall(id, dir, image, registry, plan, uid, gid, port)
@@ -141,6 +182,16 @@ func (m *Manager) runContentInstall(id, dir, image, registry string, plan minecr
 	logger := func(line string) {
 		m.mutex.Lock()
 		job := m.contentJobs[id]
+		if plan.Runtime != nil {
+			for _, variable := range plan.Runtime.VariablesSchema {
+				if variable["secret"] == true {
+					name, _ := variable["name"].(string)
+					if value := plan.Runtime.InstallVariables[name]; value != "" {
+						line = strings.ReplaceAll(line, value, "[redacted]")
+					}
+				}
+			}
+		}
 		job.Logs = append(job.Logs, line)
 		if len(job.Logs) > 500 {
 			job.Logs = job.Logs[len(job.Logs)-500:]
@@ -151,7 +202,7 @@ func (m *Manager) runContentInstall(id, dir, image, registry string, plan minecr
 		m.broadcastByID(id, line)
 	}
 	prepare := func(stage string) error {
-		if plan.Wipe {
+		if plan.Wipe && plan.Kind != "preinstall" {
 			if err := minecraft.ConfigureServer(stage, port, minecraft.EULAAccepted(dir)); err != nil {
 				return err
 			}
@@ -181,7 +232,7 @@ func (m *Manager) runContentInstall(id, dir, image, registry string, plan minecr
 		job.Result = &result
 		applyContentResult(c, job)
 		job.State = "complete"
-		job.Message = fmt.Sprintf("Installed %d files. Replaced files retained in %s", result.Files, result.Backup)
+		job.Message = fmt.Sprintf("Installed %d files. Previous files are saved in this Cell’s installation backup.", result.Files)
 	}
 	// Never release the Cell if an incomplete file transaction could not be recovered.
 	if recoveryErr := minecraft.Recover(dir); recoveryErr != nil {
@@ -205,6 +256,44 @@ func applyContentResult(c *Cell, job *ContentJob) {
 		return
 	}
 	c.Startup.Command = job.Result.Startup
+	if job.Plan.Kind == "preinstall" && job.Plan.Runtime != nil {
+		runtime := job.Plan.Runtime
+		c.Docker.Image = job.Result.Image
+		if c.Docker.Image == "" {
+			c.Docker.Image = runtime.Image
+		}
+		manifest := make(map[string]any, len(c.CombData)+5)
+		for key, value := range c.CombData {
+			manifest[key] = value
+		}
+		manifest["image"] = c.Docker.Image
+		if _, exists := manifest["id"]; !exists {
+			manifest["id"] = c.Comb
+		}
+		manifest["startup"] = runtime.Startup
+		manifest["working_dir"] = "/home/container"
+		manifest["environment"] = runtime.Environment
+		manifest["variables_schema"] = runtime.VariablesSchema
+		c.CombData = manifest
+		variables := make(map[string]string, len(c.Variables)+len(runtime.VariablesSchema))
+		for key, value := range c.Variables {
+			variables[key] = value
+		}
+		for _, variable := range runtime.VariablesSchema {
+			name, _ := variable["name"].(string)
+			if _, exists := variables[name]; !exists {
+				value, _ := variable["default"].(string)
+				variables[name] = value
+			}
+		}
+		for key, value := range runtime.Parameters {
+			variables[key] = value
+		}
+		variables["server_port"] = fmt.Sprint(c.Allocation.Port)
+		variables["server_ip"] = c.Allocation.IP
+		c.Variables = variables
+		return
+	}
 	variables := make(map[string]string, len(c.Variables)+4)
 	for key, value := range c.Variables {
 		variables[key] = value

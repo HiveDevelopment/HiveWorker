@@ -53,6 +53,10 @@ type RecoverableRuntime interface {
 	Recover(cellIDs []string, onOutput func(cellID string, line string), onExit func(cellID string)) error
 }
 
+type DeletableRuntime interface {
+	Delete(id string) error
+}
+
 type Limits struct {
 	MemoryMB         int    `json:"memory_mb"`
 	OverheadMemoryMB int    `json:"overhead_memory_mb"`

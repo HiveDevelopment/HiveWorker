@@ -28,19 +28,33 @@ type File struct {
 	Size   int64             `json:"size"`
 	Hashes map[string]string `json:"hashes"`
 }
+type PreinstallRuntime struct {
+	Parameters       map[string]string `json:"parameters,omitempty"`
+	Steps            []RecipeStep      `json:"steps,omitempty"`
+	InstallVariables map[string]string `json:"-"`
+	Image            string            `json:"image"`
+	Startup          string            `json:"startup"`
+	Environment      map[string]string `json:"environment"`
+	VariablesSchema  []map[string]any  `json:"variables_schema"`
+	SecretKeys       []string          `json:"secretKeys"`
+}
 type Plan struct {
-	Format        int    `json:"format"`
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Kind          string `json:"kind"`
-	Minecraft     string `json:"minecraft"`
-	Loader        string `json:"loader"`
-	LoaderVersion string `json:"loaderVersion"`
-	Wipe          bool   `json:"wipe"`
-	ReplaceMods   bool   `json:"replaceMods"`
-	Files         []File `json:"files"`
+	Preset        string             `json:"preset,omitempty"`
+	Version       string             `json:"version,omitempty"`
+	Runtime       *PreinstallRuntime `json:"runtime,omitempty"`
+	Format        int                `json:"format"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Kind          string             `json:"kind"`
+	Minecraft     string             `json:"minecraft"`
+	Loader        string             `json:"loader"`
+	LoaderVersion string             `json:"loaderVersion"`
+	Wipe          bool               `json:"wipe"`
+	ReplaceMods   bool               `json:"replaceMods"`
+	Files         []File             `json:"files"`
 }
 type Result struct {
+	Image   string `json:"image,omitempty"`
 	Startup string `json:"startup"`
 	Backup  string `json:"backup"`
 	Files   int    `json:"files"`
@@ -65,14 +79,24 @@ func Validate(plan Plan, registry string) error {
 	if plan.Format != 1 || len(plan.Files) == 0 || len(plan.Files) > 600 {
 		return errors.New("invalid content plan")
 	}
-	if plan.Kind != "mod" && plan.Kind != "plugin" && plan.Kind != "jar" && plan.Kind != "builder" && plan.Kind != "modpack" {
+	if plan.Kind != "mod" && plan.Kind != "plugin" && plan.Kind != "jar" && plan.Kind != "builder" && plan.Kind != "modpack" && plan.Kind != "preinstall" {
 		return errors.New("invalid install type")
 	}
 	if (plan.Kind == "jar" || plan.Kind == "builder" || plan.Kind == "modpack") && plan.Loader != "vanilla" && plan.Loader != "paper" && plan.Loader != "fabric" && plan.Loader != "forge" && plan.Loader != "neoforge" {
 		return errors.New("unsupported runtime")
 	}
-	if plan.Wipe && plan.Kind != "builder" && plan.Kind != "modpack" {
-		return errors.New("full wipe is only allowed for modpacks")
+	if plan.Wipe && plan.Kind != "builder" && plan.Kind != "modpack" && plan.Kind != "preinstall" {
+		return errors.New("full wipe is only allowed for packs and preinstalls")
+	}
+	if plan.Kind == "preinstall" {
+		if !plan.Wipe || plan.Runtime == nil {
+			return errors.New("preinstall requires a full replacement and runtime")
+		}
+		if err := validatePreinstallRuntime(plan.Runtime); err != nil {
+			return err
+		}
+	} else if plan.Runtime != nil {
+		return errors.New("runtime recipe is only valid for preinstalls")
 	}
 	seen := map[string]bool{}
 	var size int64
@@ -87,10 +111,10 @@ func Validate(plan Plan, registry string) error {
 		}
 		size += file.Size
 		remote, err := url.Parse(file.URL)
-		if err != nil || remote.Scheme != origin.Scheme || remote.Host != origin.Host || remote.User != nil || !strings.HasPrefix(remote.Path, "/api/v1/minecraft/artifacts/") || remote.RawQuery != "" || remote.Fragment != "" {
+		if err != nil || remote.Scheme != origin.Scheme || remote.Host != origin.Host || remote.User != nil || (!strings.HasPrefix(remote.Path, "/api/v1/minecraft/artifacts/") && !strings.HasPrefix(remote.Path, "/api/v1/preinstalls/artifacts/")) || remote.RawQuery != "" || remote.Fragment != "" {
 			return errors.New("download is not a Registry artifact")
 		}
-		suffix := strings.TrimPrefix(remote.Path, "/api/v1/minecraft/artifacts/")
+		suffix := remote.Path[strings.LastIndex(remote.Path, "/")+1:]
 		if len(suffix) != 64 {
 			return errors.New("invalid artifact ID")
 		}
@@ -228,6 +252,9 @@ func rollback(root, backup string, state journal) error {
 	return nil
 }
 func Recover(root string) error {
+	if err := recoverRecipeContainers(root); err != nil {
+		return err
+	}
 	directories, err := os.ReadDir(filepath.Join(root, ".hivepanel", "content-backups"))
 	if os.IsNotExist(err) {
 		return nil
@@ -295,7 +322,22 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 			return Result{}, fmt.Errorf("%s: %w", file.Path, err)
 		}
 	}
+	installedImage := ""
 	startup := ""
+	if plan.Kind == "preinstall" {
+		pinned, err := preparePreinstall(ctx, stage, plan.Runtime, log)
+		if err != nil {
+			return Result{}, err
+		}
+		installedImage = pinned
+		if err := prepare(stage); err != nil {
+			return Result{}, err
+		}
+		if err := runRecipe(ctx, stage, pinned, plan.Runtime.Steps, plan.Runtime.InstallVariables, uid, gid, log); err != nil {
+			return Result{}, fmt.Errorf("recipe failed: %w", err)
+		}
+		startup = plan.Runtime.Startup
+	}
 	if plan.Kind == "jar" || plan.Kind == "builder" || plan.Kind == "modpack" {
 		startup = "java -Xms128M -Xmx{{memory}}M -jar server.jar nogui"
 		if plan.Loader == "forge" || plan.Loader == "neoforge" {
@@ -365,6 +407,8 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 	if err := prepare(stage); err != nil {
 		return Result{}, err
 	}
+	var stagedSize int64
+	var stagedFiles int
 	// Top-level swaps must not hide links or unsafe generated paths inside directories.
 	if err := filepath.WalkDir(stage, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -374,7 +418,21 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
+			if plan.Kind == "preinstall" {
+				return safeStagedLink(stage, path)
+			}
 			return errors.New("installer produced symlink")
+		}
+		if entry.Type().IsRegular() {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			stagedSize += info.Size()
+			stagedFiles++
+			if stagedSize > 4*1024*1024*1024 || stagedFiles > 100000 {
+				return errors.New("staged installation exceeds file or size limits")
+			}
 		}
 		relative, _ := filepath.Rel(stage, path)
 		_, err = SafePath(filepath.ToSlash(relative))
@@ -441,7 +499,7 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 		}
 	}
 	if plan.Wipe {
-		log("Replacing all server files with the staged modpack; previous files are retained in the rollback backup.")
+		log("Replacing Cell files with the staged installation; previous files are retained in the rollback backup.")
 		staged, readErr := os.ReadDir(stage)
 		if readErr != nil {
 			return failed(readErr)
@@ -481,6 +539,9 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 				return nil
 			}
 			if item.Type()&os.ModeSymlink != 0 {
+				if plan.Kind == "preinstall" {
+					return safeStagedLink(stage, path)
+				}
 				return errors.New("installer produced symlink")
 			}
 			if item.IsDir() {
@@ -494,7 +555,7 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 	if err != nil {
 		return failed(err)
 	}
-	result := Result{Startup: startup, Backup: backup, Files: len(plan.Files)}
+	result := Result{Startup: startup, Image: installedImage, Backup: backup, Files: stagedFiles}
 	if checkpoint != nil {
 		if err := checkpoint(result); err != nil {
 			return failed(err)
@@ -505,7 +566,7 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 		return failed(err)
 	}
 	log("Installation completed. Previous files are retained in the content backup.")
-	return Result{Startup: startup, Backup: backup, Files: len(plan.Files)}, nil
+	return Result{Startup: startup, Image: installedImage, Backup: backup, Files: stagedFiles}, nil
 }
 
 // TransactionCommitted is checked before recovery marks rolled-back journals as resolved.

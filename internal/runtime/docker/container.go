@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/errdefs"
 	"hivepanel-worker/internal/identity"
 
 	hiveruntime "hivepanel-worker/internal/runtime"
@@ -60,7 +61,9 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 
 	containerName := "hivepanel-cell-" + cell.ID
 
-	_ = r.removeExistingContainer(ctx, containerName)
+	if err := r.removeExistingContainer(ctx, containerName); err != nil {
+		return fmt.Errorf("remove previous Cell container: %w", err)
+	}
 
 	resp, err := r.client.ContainerCreate(
 		ctx,
@@ -238,7 +241,10 @@ func (r *DockerRuntime) StartedAt(id string) *time.Time {
 func (r *DockerRuntime) removeExistingContainer(ctx context.Context, name string) error {
 	inspect, err := r.client.ContainerInspect(ctx, name)
 	if err != nil {
-		return nil
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return err
 	}
 
 	if inspect.State != nil && inspect.State.Running {
