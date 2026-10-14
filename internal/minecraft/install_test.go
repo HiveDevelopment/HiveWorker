@@ -55,6 +55,12 @@ func runFixture(t *testing.T, mutate func(*Plan), checkpoint func(Result) error)
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(root, "mods", "old.jar"), []byte("old"), 0640)
+	os.MkdirAll(filepath.Join(root, "world"), 0750)
+	os.WriteFile(filepath.Join(root, "world", "region.dat"), []byte("world"), 0640)
+	os.MkdirAll(filepath.Join(root, "plugins"), 0750)
+	os.WriteFile(filepath.Join(root, "plugins", "legacy.jar"), []byte("plugin"), 0640)
+	os.MkdirAll(filepath.Join(root, ".hivepanel"), 0750)
+	os.WriteFile(filepath.Join(root, ".hivepanel", "keep.json"), []byte("management"), 0640)
 	plan := fixturePlan(server.URL, data)
 	if mutate != nil {
 		mutate(&plan)
@@ -139,5 +145,68 @@ func TestSymlinkTargetNeverWritesOutsideCell(t *testing.T) {
 	}
 	if noSymlinks(cell, filepath.Join("mods", "new.jar")) == nil {
 		t.Fatal("symlink accepted")
+	}
+}
+func TestWipeReplacesWholeServerAndPreservesManagementState(t *testing.T) {
+	root, result, err := runFixture(t, func(p *Plan) { p.Kind = "modpack"; p.Wipe = true; p.ReplaceMods = true }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "mods", "old.jar")); !os.IsNotExist(err) {
+		t.Fatal("old server content remained")
+	}
+	for _, path := range []string{"world", "plugins"} {
+		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Fatalf("%s was not wiped", path)
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, ".hivepanel", "keep.json")); string(data) != "management" {
+		t.Fatal("management state was wiped")
+	}
+	if data, _ := os.ReadFile(filepath.Join(result.Backup, "original", "world", "region.dat")); string(data) != "world" {
+		t.Fatal("world backup missing")
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "mods", "new.jar")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(result.Backup, "original", "mods", "old.jar")); err != nil {
+		t.Fatal("old files were not retained", err)
+	}
+}
+func TestWipeCheckpointFailureRestoresWholeDirectories(t *testing.T) {
+	root, _, err := runFixture(t, func(p *Plan) { p.Kind = "modpack"; p.Wipe = true }, func(Result) error { return errors.New("disk error") })
+	if err == nil {
+		t.Fatal("failure ignored")
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "mods", "old.jar"))
+	if string(data) != "old" {
+		t.Fatal("original nested files lost")
+	}
+	if _, err := os.Stat(filepath.Join(root, "mods", "new.jar")); !os.IsNotExist(err) {
+		t.Fatal("new mod persisted")
+	}
+}
+func TestConfigureServerUsesAllocationAndPriorEULAAcceptance(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "server.properties"), []byte("motd=Pack\nserver-port=25565\n"), 0640)
+	if err := ConfigureServer(root, 25570, true); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "server.properties"))
+	if string(data) != "motd=Pack\nserver-port=25570\n" {
+		t.Fatal(string(data))
+	}
+	if !EULAAccepted(root) {
+		t.Fatal("EULA acceptance not preserved")
+	}
+}
+func TestRolledBackJournalIsNotSuccessfulCommit(t *testing.T) {
+	backup := t.TempDir()
+	if err := saveJournal(backup, journal{Committed: true, RolledBack: true}); err != nil {
+		t.Fatal(err)
+	}
+	if TransactionCommitted(backup) {
+		t.Fatal("rollback was treated as successful install")
 	}
 }

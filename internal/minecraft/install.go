@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -35,6 +36,7 @@ type Plan struct {
 	Minecraft     string `json:"minecraft"`
 	Loader        string `json:"loader"`
 	LoaderVersion string `json:"loaderVersion"`
+	Wipe          bool   `json:"wipe"`
 	ReplaceMods   bool   `json:"replaceMods"`
 	Files         []File `json:"files"`
 }
@@ -68,6 +70,9 @@ func Validate(plan Plan, registry string) error {
 	}
 	if (plan.Kind == "jar" || plan.Kind == "builder" || plan.Kind == "modpack") && plan.Loader != "vanilla" && plan.Loader != "paper" && plan.Loader != "fabric" && plan.Loader != "forge" && plan.Loader != "neoforge" {
 		return errors.New("unsupported runtime")
+	}
+	if plan.Wipe && plan.Kind != "builder" && plan.Kind != "modpack" {
+		return errors.New("full wipe is only allowed for modpacks")
 	}
 	seen := map[string]bool{}
 	var size int64
@@ -179,8 +184,9 @@ type journalEntry struct {
 	Original bool   `json:"original"`
 }
 type journal struct {
-	Entries   []journalEntry `json:"entries"`
-	Committed bool           `json:"committed"`
+	RolledBack bool           `json:"rolled_back,omitempty"`
+	Entries    []journalEntry `json:"entries"`
+	Committed  bool           `json:"committed"`
 }
 
 func saveJournal(backup string, state journal) error {
@@ -250,6 +256,7 @@ func Recover(root string) error {
 				return err
 			}
 			state.Committed = true
+			state.RolledBack = true
 			if err := saveJournal(backup, state); err != nil {
 				return err
 			}
@@ -264,7 +271,14 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 	if err := Recover(root); err != nil {
 		return Result{}, err
 	}
-	stage, err := os.MkdirTemp(filepath.Dir(root), ".hive-content-")
+	if err := noSymlinks(root, filepath.Join(".hivepanel", "content-staging")); err != nil {
+		return Result{}, err
+	}
+	stagingRoot := filepath.Join(root, ".hivepanel", "content-staging")
+	if err := os.MkdirAll(stagingRoot, 0700); err != nil {
+		return Result{}, err
+	}
+	stage, err := os.MkdirTemp(stagingRoot, "install-")
 	if err != nil {
 		return Result{}, err
 	}
@@ -351,6 +365,23 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 	if err := prepare(stage); err != nil {
 		return Result{}, err
 	}
+	// Top-level swaps must not hide links or unsafe generated paths inside directories.
+	if err := filepath.WalkDir(stage, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == stage {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("installer produced symlink")
+		}
+		relative, _ := filepath.Rel(stage, path)
+		_, err = SafePath(filepath.ToSlash(relative))
+		return err
+	}); err != nil {
+		return Result{}, err
+	}
 	backup := filepath.Join(root, ".hivepanel", "content-backups", fmt.Sprintf("%d", time.Now().UnixNano()))
 	if err := noSymlinks(root, filepath.Join(".hivepanel", "content-backups")); err != nil {
 		return Result{}, err
@@ -359,7 +390,7 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 		return Result{}, err
 	}
 	state := journal{}
-	apply := func(relative string) error {
+	apply := func(relative string, removeOnly bool) error {
 		clean, err := SafePath(relative)
 		if err != nil {
 			return err
@@ -387,6 +418,9 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 		if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 			return err
 		}
+		if removeOnly {
+			return nil
+		}
 		return os.Rename(source, target)
 	}
 	failed := func(err error) (Result, error) {
@@ -394,33 +428,69 @@ func Install(ctx context.Context, root, image, registry string, plan Plan, log f
 			return Result{}, fmt.Errorf("install failed (%v); restore backup %s: %w", err, backup, rollbackErr)
 		}
 		state.Committed = true
+		state.RolledBack = true
 		_ = saveJournal(backup, state)
 		return Result{}, err
 	}
-	if plan.ReplaceMods {
+	if !plan.Wipe && plan.ReplaceMods {
 		if err := os.MkdirAll(filepath.Join(stage, "mods"), 0750); err != nil {
 			return Result{}, err
 		}
-		if err := apply("mods"); err != nil {
+		if err := apply("mods", false); err != nil {
 			return failed(err)
 		}
 	}
-	err = filepath.WalkDir(stage, func(path string, item os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	if plan.Wipe {
+		log("Replacing all server files with the staged modpack; previous files are retained in the rollback backup.")
+		staged, readErr := os.ReadDir(stage)
+		if readErr != nil {
+			return failed(readErr)
 		}
-		if path == stage {
-			return nil
+		existing, readErr := os.ReadDir(root)
+		if readErr != nil {
+			return failed(readErr)
 		}
-		if item.Type()&os.ModeSymlink != 0 {
-			return errors.New("installer produced symlink")
+		sourceNames := map[string]bool{}
+		allNames := map[string]bool{}
+		for _, entry := range staged {
+			sourceNames[entry.Name()] = true
+			allNames[entry.Name()] = true
 		}
-		if item.IsDir() {
-			return nil
+		for _, entry := range existing {
+			if strings.EqualFold(entry.Name(), ".hivepanel") {
+				continue
+			}
+			allNames[entry.Name()] = true
 		}
-		relative, _ := filepath.Rel(stage, path)
-		return apply(filepath.ToSlash(relative))
-	})
+		names := make([]string, 0, len(allNames))
+		for name := range allNames {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if err = apply(name, !sourceNames[name]); err != nil {
+				break
+			}
+		}
+	} else {
+		err = filepath.WalkDir(stage, func(path string, item os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if path == stage {
+				return nil
+			}
+			if item.Type()&os.ModeSymlink != 0 {
+				return errors.New("installer produced symlink")
+			}
+			if item.IsDir() {
+				return nil
+			}
+			relative, _ := filepath.Rel(stage, path)
+			return apply(filepath.ToSlash(relative), false)
+		})
+	}
+
 	if err != nil {
 		return failed(err)
 	}
@@ -445,5 +515,5 @@ func TransactionCommitted(backup string) bool {
 		return false
 	}
 	var state journal
-	return json.Unmarshal(data, &state) == nil && state.Committed
+	return json.Unmarshal(data, &state) == nil && state.Committed && !state.RolledBack
 }

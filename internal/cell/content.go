@@ -130,11 +130,12 @@ func (m *Manager) StartContentInstall(id, registry string, plan minecraft.Plan) 
 		return nil, err
 	}
 	dir := c.Dir
-	go m.runContentInstall(id, dir, image, registry, plan, uid, gid)
+	port := c.Allocation.Port
+	go m.runContentInstall(id, dir, image, registry, plan, uid, gid, port)
 	copy := *job
 	return &copy, nil
 }
-func (m *Manager) runContentInstall(id, dir, image, registry string, plan minecraft.Plan, uid, gid int) {
+func (m *Manager) runContentInstall(id, dir, image, registry string, plan minecraft.Plan, uid, gid, port int) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	logger := func(line string) {
@@ -149,7 +150,15 @@ func (m *Manager) runContentInstall(id, dir, image, registry string, plan minecr
 		m.mutex.Unlock()
 		m.broadcastByID(id, line)
 	}
-	result, err := minecraft.Install(ctx, dir, image, registry, plan, logger, identity.Prepare, uid, gid, func(result minecraft.Result) error {
+	prepare := func(stage string) error {
+		if plan.Wipe {
+			if err := minecraft.ConfigureServer(stage, port, minecraft.EULAAccepted(dir)); err != nil {
+				return err
+			}
+		}
+		return identity.Prepare(stage)
+	}
+	result, err := minecraft.Install(ctx, dir, image, registry, plan, logger, prepare, uid, gid, func(result minecraft.Result) error {
 		m.mutex.Lock()
 		defer m.mutex.Unlock()
 		job := m.contentJobs[id]
