@@ -21,6 +21,8 @@ http {
  client_body_temp_path /tmp/hive-web/body;
  proxy_temp_path /tmp/hive-web/proxy;
  fastcgi_temp_path /tmp/hive-web/fastcgi;
+ uwsgi_temp_path /tmp/hive-web/uwsgi;
+ scgi_temp_path /tmp/hive-web/scgi;
  client_max_body_size 128m;
  server {
   listen $PORT;

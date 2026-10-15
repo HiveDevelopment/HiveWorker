@@ -248,3 +248,15 @@ func TestDeleteCellRestoresProxyWhenCellRemovalFails(t *testing.T) {
 		t.Fatal("successful Cell deletion retained route", err)
 	}
 }
+
+func TestAllHTTPTemporaryPathsAreWritable(t *testing.T) {
+	text, err := Render(state{Config: Defaults()}, func(Route) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, directive := range []string{"client_body_temp_path", "proxy_temp_path", "fastcgi_temp_path", "uwsgi_temp_path", "scgi_temp_path"} {
+		if !strings.Contains(text, directive+" /tmp/") {
+			t.Errorf("%s must use the proxy's writable tmpfs", directive)
+		}
+	}
+}

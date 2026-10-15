@@ -16,7 +16,7 @@ func Render(s state, certificateReady func(Route) bool) (string, error) {
 		}
 		fmt.Fprintf(&out, "load_module %s;\n", s.StreamModule)
 	}
-	out.WriteString("worker_processes auto;\npid /tmp/hivepanel-nginx.pid;\nerror_log /dev/stderr warn;\nevents { worker_connections 1024; }\nhttp {\ninclude /etc/nginx/mime.types;\ndefault_type application/octet-stream;\naccess_log /dev/stdout;\nserver_tokens off;\nresolver 127.0.0.11 valid=10s ipv6=off;\nmap $http_upgrade $connection_upgrade { default upgrade; '' close; }\nclient_body_temp_path /tmp/client_body;\nproxy_temp_path /tmp/proxy;\nfastcgi_temp_path /tmp/fastcgi;\n")
+	out.WriteString("worker_processes auto;\npid /tmp/hivepanel-nginx.pid;\nerror_log /dev/stderr warn;\nevents { worker_connections 1024; }\nhttp {\ninclude /etc/nginx/mime.types;\ndefault_type application/octet-stream;\naccess_log /dev/stdout;\nserver_tokens off;\nresolver 127.0.0.11 valid=10s ipv6=off;\nmap $http_upgrade $connection_upgrade { default upgrade; '' close; }\nclient_body_temp_path /tmp/client_body;\nproxy_temp_path /tmp/proxy;\nfastcgi_temp_path /tmp/fastcgi;\nuwsgi_temp_path /tmp/uwsgi;\nscgi_temp_path /tmp/scgi;\n")
 	for _, cidr := range s.Config.TrustedProxies {
 		fmt.Fprintf(&out, "set_real_ip_from %s;\n", cidr)
 	}
