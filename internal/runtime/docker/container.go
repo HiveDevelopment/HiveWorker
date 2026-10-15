@@ -378,8 +378,15 @@ func boolPointer(value bool) *bool {
 }
 
 func shellCommand(command string, preferred ...string) []string {
-	if len(preferred) > 0 && preferred[0] == "sh" {
-		return []string{"sh", "-c", command}
+	if len(preferred) > 0 {
+		if preferred[0] == "sh" {
+			return []string{"sh", "-c", command}
+		}
+		if preferred[0] == "bash" {
+			return []string{"bash", "-lc", command}
+		}
 	}
-	return []string{"bash", "-lc", command}
+	// Preserve Bash login behavior when available; legacy Alpine Combs can use POSIX sh.
+	// Pass the original command as an argument, never interpolate it into this launcher.
+	return []string{"sh", "-c", `if command -v bash >/dev/null 2>&1; then exec bash -lc "$1"; else exec sh -c "$1"; fi`, "hivepanel-start", command}
 }
