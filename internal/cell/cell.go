@@ -113,6 +113,7 @@ type Manager struct {
 	diskCache       map[string]*diskMeasurement
 	diskScans       chan struct{}
 	definitionMutex sync.Mutex
+	definitionGuard func(string, []int) error
 	mutex           sync.RWMutex
 	cells           map[string]*Cell
 	dataDir         string

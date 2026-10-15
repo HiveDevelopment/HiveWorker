@@ -25,6 +25,7 @@ import (
 	"hivepanel-worker/internal/players"
 	hiveruntime "hivepanel-worker/internal/runtime"
 	"hivepanel-worker/internal/updater"
+	"hivepanel-worker/internal/webproxy"
 )
 
 type Handler struct {
@@ -34,6 +35,7 @@ type Handler struct {
 	CombManager  *comb.Manager
 	BackupMounts *backup.MountService
 	Updater      *updater.Manager
+	WebProxy     *webproxy.Manager
 }
 
 type CommandRequest struct {
@@ -1177,7 +1179,13 @@ func (h *Handler) DeleteCell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Manager.Delete(id); err != nil {
+	var err error
+	if h.WebProxy != nil {
+		err = h.Manager.DeleteWith(id, func(remove func() error) error { return h.WebProxy.DeleteCell(r.Context(), id, remove) })
+	} else {
+		err = h.Manager.Delete(id)
+	}
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

@@ -38,6 +38,13 @@ func (m *Manager) Start(id string) error {
 
 	m.mutex.Unlock()
 
+	ports := []int{}
+	for _, a := range cellAllocations(&cellCopy) {
+		ports = append(ports, a.Port)
+	}
+	if err := m.checkDefinitionPorts(id, ports); err != nil {
+		return err
+	}
 	if m.runtime.IsRunning(id) {
 		return errors.New("cell already running")
 	}
@@ -83,6 +90,7 @@ func (m *Manager) Start(id string) error {
 		InstanceDir:    cellCopy.Dir,
 		Image:          image,
 		WorkingDir:     selectedComb.WorkingDir,
+		Shell:          selectedComb.Shell,
 		Environment:    environment,
 		AllocationIP:   cellCopy.Allocation.IP,
 		AllocationPort: cellCopy.Allocation.Port,

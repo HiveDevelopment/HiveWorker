@@ -71,7 +71,7 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 			Image:        cell.Image,
 			User:         managedUser,
 			WorkingDir:   cell.WorkingDir,
-			Cmd:          shellCommand(cell.Command),
+			Cmd:          shellCommand(cell.Command, cell.Shell),
 			Env:          env,
 			Tty:          false,
 			OpenStdin:    true,
@@ -377,6 +377,9 @@ func boolPointer(value bool) *bool {
 	return &value
 }
 
-func shellCommand(command string) []string {
+func shellCommand(command string, preferred ...string) []string {
+	if len(preferred) > 0 && preferred[0] == "sh" {
+		return []string{"sh", "-c", command}
+	}
 	return []string{"bash", "-lc", command}
 }

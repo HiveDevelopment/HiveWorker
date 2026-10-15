@@ -418,3 +418,11 @@ Configure the Registry with `registry.url` in `worker.yml`; `minecraft.registry_
 Source preinstalls execute administrator-authored `git`, `mkdir`, `copy`, `move`, `delete`, `write_file`, `download`, `extract` (tar.gz) and `run` steps in an isolated temporary Docker container. The only persistent bind is the staging directory; the image filesystem is read-only and host capabilities/socket access are not granted. The runner cleans up after failures and detects interrupted recipe containers during recovery. Secret runtime variables are not forwarded to build steps. Dependency symlinks are accepted only when they resolve inside the staged tree.
 
 Combs may declare a `docker_images` label-to-image map. The Panel validates image choices and passes the selected image through definition updates. Port mappings are recreated on the next stop/start; additional TCP and UDP allocations are included. Cell deletion removes its owned stopped Docker container before deleting Cell files and metadata; Docker removal errors preserve the Cell records and files.
+
+## Node web hosting and reverse proxies
+
+Each Docker node can run one separate Worker-managed Nginx container for Cell domains, HTTPS certificates, WebSockets and dedicated TCP/UDP proxies. Configure it under **Admin → Nodes → Web Proxy**; manage routes under **Cell → Domains & Proxies**. The Worker validates DNS TXT ownership and assigned backend ports before routing. Static, Node.js and PHP-FPM/Nginx Combs use the same domain controls; Minecraft web maps use HTTP routes, while game traffic requires dedicated TCP/UDP ports.
+
+The PHP application image source is in `deploy/web-php/`. Build the offered PHP tags on each applicable node before using the PHP Comb. Proxy settings and certificates persist under `web-proxy` in the configured Worker data directory. A user-defined Docker network and reachable public web/service ports are required.
+
+Authenticated API: `GET/PATCH /configuration/web-proxy`, `DELETE /configuration/web-proxy/routes/{route}`, `GET/POST /cells/{id}/domains`, `POST /cells/{id}/domains/{route}/verify`, `POST /cells/{id}/domains/{route}/certificate`, `DELETE /cells/{id}/domains/{route}`. `{id}` is the Worker daemon ID.

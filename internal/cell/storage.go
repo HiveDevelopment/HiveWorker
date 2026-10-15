@@ -84,6 +84,13 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		return nil, errors.New("cell already exists")
 	}
 
+	ports := []int{primaryAllocation.Port}
+	for _, a := range additionalAllocations {
+		ports = append(ports, a.Port)
+	}
+	if err := m.checkDefinitionPorts(id, ports); err != nil {
+		return nil, err
+	}
 	dir := filepath.Join(m.instancesDir, id)
 
 	if _, err := os.Stat(dir); err == nil {
@@ -141,9 +148,17 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 	return gameCell, nil
 }
 
-func (m *Manager) Delete(id string) error {
+func (m *Manager) Delete(id string) error { return m.DeleteWith(id, nil) }
+func (m *Manager) DeleteWith(id string, wrapper func(func() error) error) error {
 	m.definitionMutex.Lock()
 	defer m.definitionMutex.Unlock()
+	remove := func() error { return m.deleteUnlocked(id) }
+	if wrapper != nil {
+		return wrapper(remove)
+	}
+	return remove()
+}
+func (m *Manager) deleteUnlocked(id string) error {
 	m.mutex.Lock()
 
 	gameCell, exists := m.cells[id]

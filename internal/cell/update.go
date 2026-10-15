@@ -55,6 +55,13 @@ func (m *Manager) UpdateDefinition(id string, request UpdateCellDefinitionReques
 		return nil, err
 	}
 
+	ports := []int{request.Allocation.Port}
+	for _, a := range additionalAllocations {
+		ports = append(ports, a.Port)
+	}
+	if err := m.checkDefinitionPorts(id, ports); err != nil {
+		return nil, err
+	}
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 

@@ -10,6 +10,7 @@ import (
 )
 
 type Comb struct {
+	Shell           string                   `json:"shell,omitempty"`
 	ID              string                   `json:"id"`
 	Name            string                   `json:"name"`
 	Category        string                   `json:"category,omitempty"`
@@ -121,6 +122,9 @@ func FromMap(data map[string]any) (*Comb, error) {
 		return nil, err
 	}
 
+	if c.Shell != "" && c.Shell != "sh" && c.Shell != "bash" {
+		return nil, errors.New("Comb shell must be sh or bash")
+	}
 	if c.ID == "" {
 		return nil, errors.New("comb id is required")
 	}

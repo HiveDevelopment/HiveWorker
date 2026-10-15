@@ -12,6 +12,7 @@ type RuntimeCell struct {
 
 	Image      string
 	WorkingDir string
+	Shell      string
 
 	Environment map[string]string
 

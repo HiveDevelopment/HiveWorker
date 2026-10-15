@@ -1,7 +1,11 @@
 package api
 
 import (
+	"context"
+	"hivepanel-worker/internal/webproxy"
+	"log"
 	"net/http"
+	"time"
 
 	"hivepanel-worker/internal/auth"
 	"hivepanel-worker/internal/backup"
@@ -22,6 +26,33 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 		Updater:      updateManager,
 	}
 
+	if cfg.Runtime.Type == "docker" && cfg.Paths.Data != "" {
+		proxy, err := webproxy.New(cfg.Paths.Data, cfg.Docker.Network, cfg.Node.ID, nil)
+		if err != nil {
+			log.Printf("Node proxy unavailable: %v", err)
+		} else {
+			handler.WebProxy = proxy
+			manager.SetDefinitionGuard(proxy.CheckCellPorts)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+
+				if err := proxy.Restore(ctx); err != nil {
+					log.Printf("Node proxy restore failed: %v", err)
+				}
+				cancel()
+				proxy.StartRenewal(context.Background())
+			}()
+		}
+	}
+	for pattern, action := range map[string]http.HandlerFunc{
+		"GET /configuration/web-proxy": handler.NodeWebProxy, "PATCH /configuration/web-proxy": handler.ConfigureWebProxy,
+		"DELETE /configuration/web-proxy/routes/{route}": handler.AdminDeleteDomain,
+		"GET /cells/{id}/domains":                        handler.CellDomains, "POST /cells/{id}/domains": handler.SaveDomain,
+		"POST /cells/{id}/domains/{route}/verify": handler.VerifyDomain, "POST /cells/{id}/domains/{route}/certificate": handler.DomainCertificate,
+		"DELETE /cells/{id}/domains/{route}": handler.DeleteDomain,
+	} {
+		mux.Handle(pattern, auth.Middleware(cfg, action))
+	}
 	mux.HandleFunc("GET /health", handler.Health)
 
 	mux.HandleFunc("POST /migration/source-detect", handler.DetectMigrationSource)
