@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hivepanel-worker/internal/firewall"
 	"net"
 	"os"
 	"os/exec"
@@ -43,9 +44,10 @@ type Route struct {
 	MaxBodyMB          int        `json:"max_body_mb"`
 }
 type state struct {
-	Config       Config  `json:"config"`
-	Routes       []Route `json:"routes"`
-	StreamModule string  `json:"stream_module"`
+	Policies     map[string]firewall.Policy `json:"policies,omitempty"`
+	Config       Config                     `json:"config"`
+	Routes       []Route                    `json:"routes"`
+	StreamModule string                     `json:"stream_module"`
 }
 type Runner interface {
 	Run(context.Context, ...string) ([]byte, error)

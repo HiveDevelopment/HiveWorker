@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hivepanel-worker/internal/filelease"
 	"io"
 	"os"
 	"path"
@@ -24,8 +25,9 @@ var (
 type JailHandlerFactory struct{}
 
 type jailedFilesystem struct {
-	root        string
-	permissions panel.SFTPPermissions
+	rootIdentity os.FileInfo
+	root         string
+	permissions  panel.SFTPPermissions
 }
 
 type fileInfoLister struct {
@@ -63,8 +65,9 @@ func (factory *JailHandlerFactory) Create(
 	}
 
 	filesystem := &jailedFilesystem{
-		root:        filepath.Clean(absoluteRoot),
-		permissions: permissions,
+		root:         filepath.Clean(absoluteRoot),
+		rootIdentity: rootInfo,
+		permissions:  permissions,
 	}
 
 	return pkgsftp.Handlers{
@@ -82,6 +85,8 @@ func (factory *JailHandlerFactory) Create(
 func (filesystem *jailedFilesystem) Fileread(
 	request *pkgsftp.Request,
 ) (io.ReaderAt, error) {
+	release := filelease.Read(filesystem.root)
+	defer release()
 	if !filesystem.permissions.Read {
 		return nil, errPermissionDenied
 	}
@@ -117,6 +122,8 @@ func (filesystem *jailedFilesystem) Fileread(
 func (filesystem *jailedFilesystem) Filewrite(
 	request *pkgsftp.Request,
 ) (io.WriterAt, error) {
+	release := filelease.Read(filesystem.root)
+	defer release()
 	if err := filesystem.ensureWritable(); err != nil {
 		return nil, err
 	}
@@ -180,6 +187,8 @@ func (filesystem *jailedFilesystem) Filewrite(
 func (filesystem *jailedFilesystem) Filecmd(
 	request *pkgsftp.Request,
 ) error {
+	release := filelease.Read(filesystem.root)
+	defer release()
 	if err := filesystem.ensureWritable(); err != nil {
 		return err
 	}
@@ -444,6 +453,8 @@ func (filesystem *jailedFilesystem) setstat(
 func (filesystem *jailedFilesystem) Filelist(
 	request *pkgsftp.Request,
 ) (pkgsftp.ListerAt, error) {
+	release := filelease.Read(filesystem.root)
+	defer release()
 	if !filesystem.permissions.Read {
 		return nil, errPermissionDenied
 	}
@@ -639,6 +650,9 @@ func (filesystem *jailedFilesystem) resolveForWrite(
 func (filesystem *jailedFilesystem) resolveVirtualPath(
 	virtualPath string,
 ) (string, error) {
+	if err := filesystem.ensureCurrentInstance(); err != nil {
+		return "", err
+	}
 	virtualPath = strings.TrimSpace(virtualPath)
 
 	if virtualPath == "" {
@@ -755,6 +769,9 @@ func (filesystem *jailedFilesystem) isRoot(
 // Long-lived SFTP sessions honor locks created after authentication, including
 // handles opened before an installer reserves the Cell.
 func (f *jailedFilesystem) ensureWritable() error {
+	if err := f.ensureCurrentInstance(); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(filepath.Join(f.root, ".hivepanel", "lock.json"))
 	if os.IsNotExist(err) {
 		return nil
@@ -781,8 +798,21 @@ type lockedWriter struct {
 }
 
 func (w *lockedWriter) WriteAt(p []byte, off int64) (int, error) {
+	release := filelease.Read(w.filesystem.root)
+	defer release()
 	if err := w.filesystem.ensureWritable(); err != nil {
 		return 0, err
 	}
 	return w.File.WriteAt(p, off)
+}
+
+func (f *jailedFilesystem) ensureCurrentInstance() error {
+	if f.rootIdentity == nil {
+		return nil
+	}
+	current, err := os.Stat(f.root)
+	if err != nil || !os.SameFile(current, f.rootIdentity) {
+		return fmt.Errorf("active instance changed; reconnect your SFTP session")
+	}
+	return nil
 }

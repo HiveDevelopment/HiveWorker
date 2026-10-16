@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hivepanel-worker/internal/firewall"
 	"hivepanel-worker/internal/identity"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -493,4 +495,23 @@ func (m *Manager) commitLocked(ctx context.Context, next state, apply bool) erro
 	}
 	m.state = next
 	return nil
+}
+
+func (m *Manager) SetAccessPolicy(ctx context.Context, id string, p firewall.Policy) error {
+	p, err := firewall.Validate(p)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if old, ok := m.state.Policies[id]; (ok && reflect.DeepEqual(old, p)) || (!ok && !p.Enabled) {
+		return nil
+	}
+	next := m.state
+	next.Policies = map[string]firewall.Policy{}
+	for id, policy := range m.state.Policies {
+		next.Policies[id] = policy
+	}
+	next.Policies[id] = p
+	return m.commitLocked(ctx, next, next.Config.Enabled)
 }

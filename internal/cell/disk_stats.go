@@ -1,6 +1,7 @@
 package cell
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -35,22 +36,35 @@ func (m *Manager) cachedDisk(id, dir string) (int64, bool) {
 				defer func() { <-m.diskScans }()
 				var size int64
 				deadline := time.Now().Add(30 * time.Second)
-				err := filepath.WalkDir(dir, func(path string, item fs.DirEntry, err error) error {
-					if time.Now().After(deadline) {
-						return os.ErrDeadlineExceeded
-					}
-					if err != nil {
-						return err
-					}
-					if item.Type().IsRegular() {
-						info, err := item.Info()
+				roots := []string{dir}
+				if m.instancesDir != "" {
+					roots = append(roots, m.instanceRoot(id))
+				}
+				var err error
+				for _, scanRoot := range roots {
+					err = filepath.WalkDir(scanRoot, func(path string, item fs.DirEntry, err error) error {
+						if time.Now().After(deadline) {
+							return os.ErrDeadlineExceeded
+						}
+						if errors.Is(err, os.ErrNotExist) && path == scanRoot {
+							return nil
+						}
 						if err != nil {
 							return err
 						}
-						size += info.Size()
+						if item.Type().IsRegular() {
+							info, err := item.Info()
+							if err != nil {
+								return err
+							}
+							size += info.Size()
+						}
+						return nil
+					})
+					if err != nil {
+						break
 					}
-					return nil
-				})
+				}
 				m.mutex.Lock()
 				defer m.mutex.Unlock()
 				if m.diskCache[id] == entry {

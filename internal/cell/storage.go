@@ -91,6 +91,9 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 	if err := m.checkDefinitionPorts(id, ports); err != nil {
 		return nil, err
 	}
+	if err := m.checkFirewall(id, append([]allocation.Allocation{primaryAllocation}, additionalAllocations...)); err != nil {
+		return nil, err
+	}
 	dir := filepath.Join(m.instancesDir, id)
 
 	if _, err := os.Stat(dir); err == nil {
@@ -149,14 +152,44 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 }
 
 func (m *Manager) Delete(id string) error { return m.DeleteWith(id, nil) }
-func (m *Manager) DeleteWith(id string, wrapper func(func() error) error) error {
+func (m *Manager) DeleteWith(id string, wrapper func(func() error) error, token ...string) error {
 	m.definitionMutex.Lock()
 	defer m.definitionMutex.Unlock()
-	remove := func() error { return m.deleteUnlocked(id) }
-	if wrapper != nil {
-		return wrapper(remove)
+	m.mutex.Lock()
+	c, exists := m.cells[id]
+	if !exists {
+		m.mutex.Unlock()
+		return errors.New("Cell not found")
 	}
-	return remove()
+	if m.runtime.IsRunning(id) {
+		m.mutex.Unlock()
+		return errors.New("Cell must be stopped first")
+	}
+	originalLock := c.Lock
+	if c.exclusiveOperation() {
+		if c.Lock.Type != "resource_operation" || len(token) != 1 || token[0] == "" || c.Lock.OperationToken != token[0] {
+			m.mutex.Unlock()
+			return errors.New("wait for the current Cell operation to finish")
+		}
+		c.Lock = CellLock{}
+	}
+	m.mutex.Unlock()
+	remove := func() error { return m.deleteUnlocked(id) }
+	var err error
+	if wrapper != nil {
+		err = wrapper(remove)
+	} else {
+		err = remove()
+	}
+	if err != nil {
+		m.mutex.Lock()
+		if existing, ok := m.cells[id]; ok {
+			existing.Lock = originalLock
+			_ = saveLock(existing.Dir, originalLock)
+		}
+		m.mutex.Unlock()
+	}
+	return err
 }
 func (m *Manager) deleteUnlocked(id string) error {
 	m.mutex.Lock()
@@ -166,7 +199,7 @@ func (m *Manager) deleteUnlocked(id string) error {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
-	if gameCell.Lock.Type == "content_install" {
+	if gameCell.exclusiveOperation() {
 		m.mutex.Unlock()
 		return errors.New("content installation is in progress")
 	}
@@ -185,6 +218,12 @@ func (m *Manager) deleteUnlocked(id string) error {
 	if err := os.RemoveAll(gameCell.Dir); err != nil {
 		return err
 	}
+	if err := os.RemoveAll(m.instanceRoot(id)); err != nil {
+		return err
+	}
+	_ = os.Remove(m.instanceStatePath(id))
+	_ = os.Remove(m.copyJobPath(id))
+	_ = os.Remove(m.instanceJournalPath(id))
 	if err := os.Remove(m.cellConfigPath(id)); err != nil && !os.IsNotExist(err) {
 		return err
 	}

@@ -1,6 +1,9 @@
 package cell
 
-import "errors"
+import (
+	"errors"
+	"hivepanel-worker/internal/allocation"
+)
 
 func (m *Manager) SetDefinitionGuard(guard func(string, []int) error) {
 	m.definitionMutex.Lock()
@@ -31,6 +34,18 @@ func (m *Manager) WithCellDefinition(id string, callback func([]int) error) erro
 func (m *Manager) checkDefinitionPorts(id string, ports []int) error {
 	if m.definitionGuard != nil {
 		return m.definitionGuard(id, ports)
+	}
+	return nil
+}
+
+func (m *Manager) SetFirewallGuard(guard func(string, []allocation.Allocation) error) {
+	m.definitionMutex.Lock()
+	defer m.definitionMutex.Unlock()
+	m.firewallGuard = guard
+}
+func (m *Manager) checkFirewall(id string, allocations []allocation.Allocation) error {
+	if m.firewallGuard != nil {
+		return m.firewallGuard(id, allocations)
 	}
 	return nil
 }

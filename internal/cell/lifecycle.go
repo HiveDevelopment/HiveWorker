@@ -19,7 +19,7 @@ func (m *Manager) Start(id string) error {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
-	if cell.Lock.Type == "content_install" {
+	if cell.exclusiveOperation() || cell.Lock.DisablePower {
 		m.mutex.Unlock()
 		return errors.New("content installation is in progress")
 	}
@@ -38,6 +38,9 @@ func (m *Manager) Start(id string) error {
 
 	m.mutex.Unlock()
 
+	if err := m.checkFirewall(id, cellAllocations(&cellCopy)); err != nil {
+		return err
+	}
 	ports := []int{}
 	for _, a := range cellAllocations(&cellCopy) {
 		ports = append(ports, a.Port)

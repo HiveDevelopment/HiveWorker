@@ -78,6 +78,9 @@ func (m *Manager) LockCell(id string, lockType string, reason string, message st
 		return errors.New("cell not found")
 	}
 
+	if gameCell.exclusiveOperation() {
+		return errors.New("the current Cell operation must finish before changing its lock")
+	}
 	gameCell.Lock = DefaultLock(lockType, reason, message)
 
 	return saveLock(gameCell.Dir, gameCell.Lock)
@@ -91,7 +94,7 @@ func (m *Manager) UnlockCell(id string) error {
 	if !exists {
 		return errors.New("cell not found")
 	}
-	if gameCell.Lock.Type == "content_install" {
+	if gameCell.exclusiveOperation() {
 		return errors.New("content installation must finish before unlocking")
 	}
 

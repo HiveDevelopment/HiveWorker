@@ -9,6 +9,7 @@ import (
 )
 
 type FeatureLimits struct {
+	InstanceLimit   *int `json:"instance_limit,omitempty"`
 	DatabaseLimit   *int `json:"database_limit,omitempty"`
 	AllocationLimit *int `json:"allocation_limit,omitempty"`
 	BackupLimit     *int `json:"backup_limit,omitempty"`
@@ -67,6 +68,7 @@ type CreateCellRequest struct {
 }
 
 type UpdateCellDefinitionRequest struct {
+	OperationToken        string                  `json:"operation_token,omitempty"`
 	ContentJobID          string                  `json:"content_job_id"`
 	Name                  string                  `json:"name"`
 	Comb                  string                  `json:"comb"`
@@ -95,7 +97,8 @@ type CellStats struct {
 }
 
 type CellLock struct {
-	Locked bool `json:"locked"`
+	OperationToken string `json:"operation_token,omitempty"`
+	Locked         bool   `json:"locked"`
 
 	Type    string `json:"type"`
 	Reason  string `json:"reason"`
@@ -110,10 +113,12 @@ type CellLock struct {
 }
 
 type Manager struct {
+	prepareInstance func(string) error
 	diskCache       map[string]*diskMeasurement
 	diskScans       chan struct{}
 	definitionMutex sync.Mutex
 	definitionGuard func(string, []int) error
+	firewallGuard   func(string, []allocation.Allocation) error
 	mutex           sync.RWMutex
 	cells           map[string]*Cell
 	dataDir         string

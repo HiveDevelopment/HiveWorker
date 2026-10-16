@@ -69,7 +69,7 @@ func (m *Manager) UpdateDefinition(id string, request UpdateCellDefinitionReques
 	if !exists {
 		return nil, errors.New("cell not found")
 	}
-	if gameCell.Lock.Type == "content_install" {
+	if gameCell.exclusiveOperation() && (gameCell.Lock.Type != "resource_operation" || gameCell.Lock.OperationToken != request.OperationToken) {
 		return nil, errors.New("content installation is in progress")
 	}
 
@@ -99,6 +99,10 @@ func (m *Manager) UpdateDefinition(id string, request UpdateCellDefinitionReques
 	newAllocations = append(newAllocations, additionalAllocations...)
 
 	reserved := append(append([]allocation.Allocation(nil), newAllocations...), gameCell.ActiveAllocations...)
+	if err := m.checkFirewall(id, reserved); err != nil {
+		*gameCell = previous
+		return nil, err
+	}
 	if err := m.allocManager.ReplaceCellReservations(oldAllocations, reserved); err != nil {
 		*gameCell = previous
 		return nil, err
@@ -149,6 +153,9 @@ func (m *Manager) releaseStoppedAllocations(id string) error {
 		return nil
 	}
 	previous := *gameCell
+	if err := m.checkFirewall(id, cellAllocations(gameCell)); err != nil {
+		return err
+	}
 	gameCell.ActiveAllocations = nil
 	gameCell.ActiveStop = nil
 	if err := m.save(gameCell); err != nil {

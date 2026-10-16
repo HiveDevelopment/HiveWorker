@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"hivepanel-worker/internal/allocation"
+	"hivepanel-worker/internal/firewall"
 	"hivepanel-worker/internal/webproxy"
 	"log"
 	"net/http"
@@ -27,11 +30,57 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 	}
 
 	if cfg.Runtime.Type == "docker" && cfg.Paths.Data != "" {
+		fw, err := firewall.New(cfg.Paths.Data, nil)
+		if err != nil {
+			log.Printf("Firewall state could not be loaded: %v", err)
+			manager.SetFirewallGuard(func(string, []allocation.Allocation) error {
+				return fmt.Errorf("firewall state requires administrator recovery before starting Cells")
+			})
+		} else {
+			handler.Firewall = fw
+			go func() {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+					if err := fw.Restore(ctx); err != nil {
+						log.Printf("Firewall reconciliation failed: %v", err)
+					}
+					cancel()
+				}
+			}()
+			for _, c := range manager.List() {
+				_ = fw.Sync(context.Background(), c.ID, append(append([]allocation.Allocation{c.Allocation}, c.AdditionalAllocations...), c.ActiveAllocations...))
+			}
+			manager.SetFirewallGuard(func(id string, allocs []allocation.Allocation) error {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				return fw.Sync(ctx, id, allocs)
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := fw.Restore(ctx); err != nil {
+				log.Printf("Firewall restore failed: %v", err)
+			}
+			cancel()
+		}
+	}
+	if cfg.Runtime.Type == "docker" && cfg.Paths.Data != "" {
 		proxy, err := webproxy.New(cfg.Paths.Data, cfg.Docker.Network, cfg.Node.ID, nil)
 		if err != nil {
 			log.Printf("Node proxy unavailable: %v", err)
 		} else {
 			handler.WebProxy = proxy
+			if handler.Firewall != nil {
+				handler.Firewall.OnPolicy = proxy.SetAccessPolicy
+				// Reconcile policies after a crash between proxy reload and firewall persistence.
+				for _, c := range manager.List() {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					if err := proxy.SetAccessPolicy(ctx, c.ID, handler.Firewall.Policy(c.ID)); err != nil {
+						log.Printf("Proxy firewall restore failed for %s: %v", c.ID, err)
+					}
+					cancel()
+				}
+			}
 			manager.SetDefinitionGuard(proxy.CheckCellPorts)
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -50,6 +99,14 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 		"GET /cells/{id}/domains":                        handler.CellDomains, "POST /cells/{id}/domains": handler.SaveDomain,
 		"POST /cells/{id}/domains/{route}/verify": handler.VerifyDomain, "POST /cells/{id}/domains/{route}/certificate": handler.DomainCertificate,
 		"DELETE /cells/{id}/domains/{route}": handler.DeleteDomain,
+	} {
+		mux.Handle(pattern, auth.Middleware(cfg, action))
+	}
+	for pattern, action := range map[string]http.HandlerFunc{
+		"POST /cells/{id}/operations/begin": handler.BeginCellOperation, "POST /cells/{id}/operations/end": handler.EndCellOperation,
+		"GET /cells/{id}/firewall": handler.CellFirewall, "PUT /cells/{id}/firewall": handler.SetCellFirewall,
+		"GET /cells/{id}/instances": handler.CellInstances, "POST /cells/{id}/instances": handler.CreateCellInstance,
+		"POST /cells/{id}/instances/{instance}/activate": handler.ActivateCellInstance, "DELETE /cells/{id}/instances/{instance}": handler.DeleteCellInstance,
 	} {
 		mux.Handle(pattern, auth.Middleware(cfg, action))
 	}
@@ -96,31 +153,31 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 	mux.Handle("GET /cells/{id}/backups", auth.Middleware(cfg, http.HandlerFunc(handler.ListBackups)))
 	mux.Handle("POST /cells/{id}/backups/{name}/mount", auth.Middleware(cfg, http.HandlerFunc(handler.MountBackup)))
 	mux.Handle("DELETE /cells/{id}/backup-mounts/{mountId}", auth.Middleware(cfg, http.HandlerFunc(handler.UnmountBackup)))
-	mux.Handle("GET /cells/{id}/backup-mounts/{mountId}/files", auth.Middleware(cfg, http.HandlerFunc(handler.ListMountedBackupFiles)))
+	mux.Handle("GET /cells/{id}/backup-mounts/{mountId}/files", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.ListMountedBackupFiles))))
 	mux.Handle("POST /cells/{id}/backup-mounts/{mountId}/restore", auth.Middleware(cfg, http.HandlerFunc(handler.RestoreMountedBackupPath)))
 
-	mux.Handle("GET /cells/{id}/backups/files", auth.Middleware(cfg, http.HandlerFunc(handler.ListBackupFiles)))
-	mux.Handle("GET /cells/{id}/backups/files/read", auth.Middleware(cfg, http.HandlerFunc(handler.ReadBackupFile)))
-	mux.Handle("POST /cells/{id}/backups/files/extract", auth.Middleware(cfg, http.HandlerFunc(handler.ExtractBackupFile)))
+	mux.Handle("GET /cells/{id}/backups/files", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.ListBackupFiles))))
+	mux.Handle("GET /cells/{id}/backups/files/read", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.ReadBackupFile))))
+	mux.Handle("POST /cells/{id}/backups/files/extract", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.ExtractBackupFile))))
 
 	mux.Handle("GET /cells/{id}/backups/{backupID}/download", auth.Middleware(cfg, http.HandlerFunc(handler.DownloadBackup)))
 	mux.Handle("DELETE /cells/{id}/backups/{backupID}", auth.Middleware(cfg, http.HandlerFunc(handler.DeleteBackup)))
 	mux.Handle("POST /cells/{id}/backups/{backupID}/restore", auth.Middleware(cfg, http.HandlerFunc(handler.RestoreBackup)))
 
-	mux.Handle("GET /cells/{id}/files", auth.Middleware(cfg, http.HandlerFunc(handler.ListFiles)))
-	mux.Handle("GET /cells/{id}/files/read", auth.Middleware(cfg, http.HandlerFunc(handler.ReadFile)))
-	mux.Handle("POST /cells/{id}/files/write", auth.Middleware(cfg, http.HandlerFunc(handler.WriteFile)))
-	mux.Handle("DELETE /cells/{id}/files/delete", auth.Middleware(cfg, http.HandlerFunc(handler.DeleteFile)))
-	mux.Handle("POST /cells/{id}/files/folder", auth.Middleware(cfg, http.HandlerFunc(handler.CreateFolder)))
-	mux.Handle("POST /cells/{id}/files/rename", auth.Middleware(cfg, http.HandlerFunc(handler.RenameFile)))
-	mux.Handle("POST /cells/{id}/files/upload", auth.Middleware(cfg, http.HandlerFunc(handler.UploadFile)))
-	mux.Handle("GET /cells/{id}/files/download", auth.Middleware(cfg, http.HandlerFunc(handler.DownloadFile)))
-	mux.Handle("POST /cells/{id}/files/restore", auth.Middleware(cfg, http.HandlerFunc(handler.RestoreFile)))
-	mux.Handle("DELETE /cells/{id}/files/permanent", auth.Middleware(cfg, http.HandlerFunc(handler.PermanentDeleteFile)))
-	mux.Handle("POST /cells/{id}/files/file", auth.Middleware(cfg, http.HandlerFunc(handler.CreateFile)))
-	mux.Handle("POST /cells/{id}/files/upload-url", auth.Middleware(cfg, http.HandlerFunc(handler.UploadFromURL)))
-	mux.Handle("POST /cells/{id}/files/archive", auth.Middleware(cfg, http.HandlerFunc(handler.CreateFileArchive)))
-	mux.Handle("POST /cells/{id}/files/extract", auth.Middleware(cfg, http.HandlerFunc(handler.ExtractFileArchive)))
+	mux.Handle("GET /cells/{id}/files", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.ListFiles))))
+	mux.Handle("GET /cells/{id}/files/read", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.ReadFile))))
+	mux.Handle("POST /cells/{id}/files/write", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.WriteFile))))
+	mux.Handle("DELETE /cells/{id}/files/delete", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.DeleteFile))))
+	mux.Handle("POST /cells/{id}/files/folder", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.CreateFolder))))
+	mux.Handle("POST /cells/{id}/files/rename", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.RenameFile))))
+	mux.Handle("POST /cells/{id}/files/upload", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.UploadFile))))
+	mux.Handle("GET /cells/{id}/files/download", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.DownloadFile))))
+	mux.Handle("POST /cells/{id}/files/restore", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.RestoreFile))))
+	mux.Handle("DELETE /cells/{id}/files/permanent", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.PermanentDeleteFile))))
+	mux.Handle("POST /cells/{id}/files/file", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.CreateFile))))
+	mux.Handle("POST /cells/{id}/files/upload-url", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.UploadFromURL))))
+	mux.Handle("POST /cells/{id}/files/archive", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.CreateFileArchive))))
+	mux.Handle("POST /cells/{id}/files/extract", auth.Middleware(cfg, handler.FileLease(http.HandlerFunc(handler.ExtractFileArchive))))
 
 	mux.Handle("GET /cells/{id}/config", auth.Middleware(cfg, http.HandlerFunc(handler.ListConfigFiles)))
 	mux.Handle("GET /cells/{id}/config/read", auth.Middleware(cfg, http.HandlerFunc(handler.ReadConfigFile)))

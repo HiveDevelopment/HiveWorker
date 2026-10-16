@@ -66,6 +66,7 @@ func (m *Manager) Load() error {
 			continue
 		}
 
+		recoveryErr := m.recoverInstance(&gameCell)
 		gameCell.console = []ConsoleEntry{}
 		gameCell.subscribers = map[chan ConsoleEntry]bool{}
 
@@ -84,6 +85,13 @@ func (m *Manager) Load() error {
 			gameCell.Lock = lock
 		}
 
+		if recoveryErr == nil {
+			recoveryErr = m.recoverInstanceCopy(&gameCell)
+		}
+		if recoveryErr != nil {
+			gameCell.Lock = DefaultLock("instance_recovery", "Instance recovery needed", "An administrator must inspect this Cell's saved instance state.")
+			_ = saveLock(gameCell.Dir, gameCell.Lock)
+		}
 		m.loadContentJob(gameCell.ID)
 		if gameCell.Lock.Type == "content_install" || (m.contentJobs[gameCell.ID] != nil && m.contentJobs[gameCell.ID].State == "installing") {
 			m.recoverContent(&gameCell)

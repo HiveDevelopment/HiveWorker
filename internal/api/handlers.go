@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"hivepanel-worker/internal/allocation"
 	"io"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"hivepanel-worker/internal/comb"
 	"hivepanel-worker/internal/config"
 	"hivepanel-worker/internal/files"
+	"hivepanel-worker/internal/firewall"
 	"hivepanel-worker/internal/importer"
 	"hivepanel-worker/internal/migrationdetect"
 	"hivepanel-worker/internal/node"
@@ -36,6 +38,7 @@ type Handler struct {
 	BackupMounts *backup.MountService
 	Updater      *updater.Manager
 	WebProxy     *webproxy.Manager
+	Firewall     *firewall.Manager
 }
 
 type CommandRequest struct {
@@ -1179,12 +1182,34 @@ func (h *Handler) DeleteCell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var err error
-	if h.WebProxy != nil {
-		err = h.Manager.DeleteWith(id, func(remove func() error) error { return h.WebProxy.DeleteCell(r.Context(), id, remove) })
-	} else {
-		err = h.Manager.Delete(id)
+	if _, exists := h.Manager.Get(id); !exists {
+		writeJSONStatus(w, 404, map[string]string{"message": "Cell not found"})
+		return
 	}
+	var err error
+	err = h.Manager.DeleteWith(id, func(remove func() error) error {
+		c, _ := h.Manager.Get(id)
+		policy := firewall.Default()
+		if h.Firewall != nil {
+			policy = h.Firewall.Policy(id)
+			if err := h.Firewall.Remove(r.Context(), id); err != nil {
+				return err
+			}
+		}
+		cleanup := remove
+		if h.WebProxy != nil {
+			cleanup = func() error { return h.WebProxy.DeleteCell(r.Context(), id, remove) }
+		}
+		if err := cleanup(); err != nil {
+			if h.Firewall != nil && c != nil {
+				_ = h.Firewall.Sync(r.Context(), id, append(append([]allocation.Allocation{c.Allocation}, c.AdditionalAllocations...), c.ActiveAllocations...))
+				_ = h.Firewall.Set(r.Context(), id, policy)
+			}
+			return err
+		}
+		return nil
+	}, r.Header.Get("X-Hive-Operation"))
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

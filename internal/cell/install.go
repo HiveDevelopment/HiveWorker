@@ -23,7 +23,7 @@ func (m *Manager) startInstall(id string) error {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
-	if gameCell.Lock.Type == "content_install" {
+	if gameCell.exclusiveOperation() {
 		m.mutex.Unlock()
 		return errors.New("content installation is in progress")
 	}
@@ -137,7 +137,7 @@ func (m *Manager) Reinstall(id string) error {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
-	if gameCell.Lock.Type == "content_install" {
+	if gameCell.exclusiveOperation() {
 		m.mutex.Unlock()
 		return errors.New("content installation is in progress")
 	}
